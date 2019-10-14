@@ -1,0 +1,69 @@
+--- dbg_xnu.cfg.orig
++++ dbg_xnu.cfg
+@@ -270,6 +270,66 @@
+     "com.corellium.gdb.arm64.state":
+     {
+       "title": "FP/Exception State Registers"
++    },
++    "com.apple.debugserver.arm64.general":
++    {
++      "title": "General Registers",
++      "rename":
++      {
++        "cpsr": "psr",
++        "fp": "x29",
++        "lr": "x30"
++      },
++      "stack_ptr": "sp",
++      "code_ptr": "pc",
++      "frame_ptr": "x29",
++      "data_ptr":
++      [
++         "x0",  "x1",  "x2",  "x3",  "x4",  "x5",  "x6",  "x7",
++         "x8",  "x9", "x10", "x11", "x12", "x13", "x14", "x15",
++        "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23",
++        "x24", "x25", "x26", "x27", "x28", "x29", "x30"
++      ],
++      "bitfields":
++      {
++        "psr":
++        {
++          "M":    [  0,  4 ],
++          "F":    [  6,  6 ],
++          "I":    [  7,  7 ],
++          "A":    [  8,  8 ],
++          "D":    [  9,  9 ],
++          "IL":   [ 20, 20 ],
++          "SS":   [ 21, 21 ],
++          "PAN":  [ 22, 22 ],
++          "UAO":  [ 23, 23 ],
++          "DIT":  [ 24, 24 ],
++          "V":    [ 28, 28 ],
++          "C":    [ 29, 29 ],
++          "Z":    [ 30, 30 ],
++          "N":    [ 31, 31 ]
++        }
++      }
++    },
++    "com.apple.debugserver.arm64.low":
++    {
++      "title": "General Registers (32-bit)"
++    },
++    "com.apple.debugserver.arm64.single":
++    {
++      "title": "Floating Point Registers (Single Precision)"
++    },
++    "com.apple.debugserver.arm64.double":
++    {
++      "title": "Floating Point Registers (Double Precision)"
++    },
++    "com.apple.debugserver.arm64.neon":
++    {
++      "title": "NEON Registers"
++    },
++    "com.apple.debugserver.arm64.state":
++    {
++      "title": "FP/Exception State Registers"
+     }
+   }
+ }

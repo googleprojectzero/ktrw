@@ -1,0 +1,13 @@
+__disable_preemption	0xFFFFFFF007203050
+__enable_preemption	0xFFFFFFF007203064
+__mh_execute_header	0xFFFFFFF007004000
+_const_boot_args	0xFFFFFFF0070B9558
+_IOSleep		0xFFFFFFF007589040
+_kernel_map		0xFFFFFFF007663080
+_kernel_memory_allocate	0xFFFFFFF0071995FC
+_kernel_thread_start	0xFFFFFFF007143F58
+_ml_nofault_copy	0xFFFFFFF007209324
+_panic			0xFFFFFFF00711207C
+_paniclog_append_noflush	0xFFFFFFF0071209B0
+_thread_deallocate	0xFFFFFFF0071419B4
+_vsnprintf		0xFFFFFFF0074A2384
