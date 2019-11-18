@@ -625,13 +625,12 @@ ep_in_send(struct endpoint_state *ep) {
 			// If we are sending at least one full packet of data on EP !0 IN, then
 			// compute the number of packets we need to send. If the data we're sending
 			// completely fills all packets with no remainder, then we'll also need to
-			// tack on an empty packet to signal the end of the transfer.
+			// tack on an empty packet to signal the end of the transfer. I thought
+			// this could be programmed here, but it appears to not work correctly, so
+			// I've moved sending the zlp to ep_in_send_done().
 			if (transfer_size >= ep->max_packet_size) {
 				packet_count = (transfer_size + ep->max_packet_size - 1)
 					/ ep->max_packet_size;
-				if (transfer_size % ep->max_packet_size == 0) {
-					packet_count += 1;
-				}
 			}
 		}
 	}
@@ -656,6 +655,15 @@ ep_in_send_done(struct endpoint_state *ep) {
 		ep->transfer_size = 0;
 	}
 	if (ep->transferred == ep->transfer_size) {
+		// Handle sending a zlp after transferring a whole number of full packets.
+		// Initially this was done by configuring DIEPTSIZ to include the zlp, but that
+		// seems to hang the USB stack in some cases.
+		if (ep->transfer_size > 0 && ep->transfer_size % ep->max_packet_size == 0) {
+			ep->transferred = 0;
+			ep->transfer_size = TRANSFER_EMPTY;
+			ep_in_send(ep);
+			return false;
+		}
 		USB_DEBUG(USB_DEBUG_XFER, "EP%u IN xfer done", ep->n);
 		return true;
 	} else {
@@ -1345,12 +1353,13 @@ USB_DEBUG(unsigned type, const char *format, ...) {
 	}
 }
 
-void USB_DEBUG_ABORT_INTERNAL(const char *function) {
+static void
+USB_DEBUG_ABORT_INTERNAL(const char *function) {
 	USB_DEBUG(USB_DEBUG_FATAL, "ABORT: %s: %llu", function, USB_DEBUG_ITERATION);
 	panic("");
 }
 
-void
+static void
 USB_DEBUG_PRINT_REGISTERS() {
 #define USB_DEBUG_REG_VALUE(reg) USB_DEBUG(USB_DEBUG_FATAL, #reg " = 0x%08x", reg_read(reg))
 	USB_DEBUG_REG_VALUE(rGOTGCTL);
