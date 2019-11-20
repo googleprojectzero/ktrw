@@ -20,7 +20,16 @@
 #ifndef KEXT_LOAD__H_
 #define KEXT_LOAD__H_
 
+#include <stdbool.h>
 #include <stdint.h>
+
+/*
+ * kext_load_set_kernel_symbol_database
+ *
+ * Description:
+ * 	Set the path to the kernel symbols database.
+ */
+bool kext_load_set_kernel_symbol_database(const char *path);
 
 /*
  * kext_load

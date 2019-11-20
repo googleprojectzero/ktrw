@@ -36,6 +36,18 @@
 
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+	// Get the bundle path.
+	char bundle_path[1024];
+	get_bundle_path(bundle_path, sizeof(bundle_path));
+	// Load the kernel symbol database.
+	char kernel_symbol_database[1024];
+	snprintf(kernel_symbol_database, sizeof(kernel_symbol_database), "%s/%s", bundle_path,
+			"kernel_symbols");
+	bool ok = kext_load_set_kernel_symbol_database(kernel_symbol_database);
+	if (!ok) {
+		ERROR("Could not load kernel symbol database");
+		goto done_0;
+	}
 	// Try to get the kernel task port using task_for_pid(). If this works, then KTRR has
 	// already been bypassed and the kext has already been loaded.
 	kernel_task_port = MACH_PORT_NULL;
@@ -61,7 +73,7 @@
 		goto done_0;
 	}
 	// Initialize our kernel function calling capability.
-	bool ok = kernel_call_init();
+	ok = kernel_call_init();
 	if (!ok) {
 		ERROR("Could not initialize kernel_call subsystem");
 		goto done_0;
@@ -81,8 +93,6 @@
 	INFO("task_for_pid(0) = 0x%x", tfp0);
 	// Load the kernel extension.
 	const char *kext_name = "ktrw_gdb_stub.ikext";
-	char bundle_path[1024];
-	get_bundle_path(bundle_path, sizeof(bundle_path));
 	char kext_path[1024];
 	snprintf(kext_path, sizeof(kext_path), "%s/kexts/%s", bundle_path, kext_name);
 	uint64_t kext_address = kext_load(kext_path, 0);

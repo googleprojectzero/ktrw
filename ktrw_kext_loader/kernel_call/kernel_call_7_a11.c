@@ -77,18 +77,18 @@ create_user_client() {
 		mach_port_t service = IOIteratorNext(iter);
 		if (service == MACH_PORT_NULL) {
 			ERROR("Could not open any %s", service_name);
-			break;
+			goto fail_1;
 		}
 		// Now open a connection to it.
 		kr = IOServiceOpen(service, mach_task_self(), 0, &connection);
 		IOObjectRelease(service);
 		if (kr == KERN_SUCCESS) {
-			success = true;
 			break;
 		}
 		DEBUG_TRACE(2, "%s returned 0x%x: %s", "IOServiceOpen", kr, mach_error_string(kr));
 		DEBUG_TRACE(2, "Could not open %s user client", service_name);
 	}
+	success = true;
 fail_1:
 	IOObjectRelease(iter);
 fail_0:

@@ -37,7 +37,7 @@ kernel_call_init() {
 
 void
 kernel_call_deinit() {
-	return kernel_call_7_a11_deinit();
+	kernel_call_7_a11_deinit();
 }
 
 uint32_t

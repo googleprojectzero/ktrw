@@ -72,7 +72,7 @@ i_can_has_debugger__iPhone10_1__16C101() {
 	INFO("Enabling PE_i_can_has_debugger()");
 	uint64_t debug_enabled = 0xFFFFFFF00702D430 + kernel_slide;
 	kernel_write32(debug_enabled, 1);
-};
+}
 
 // A list of kernel patches to apply by platform.
 static struct platform_initialization kernel_patches[] = {

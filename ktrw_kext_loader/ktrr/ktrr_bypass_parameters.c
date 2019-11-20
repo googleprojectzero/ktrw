@@ -38,10 +38,20 @@ offsets__iphone10_1__16C101() {
 	OFFSET(cpu_data, utt_mmio)             = 60 * 8;
 }
 
+static void
+offsets__iphone10_1__17B102() {
+	SIZE(cpu_data_entry)                   = 16;
+	OFFSET(cpu_data_entry, cpu_data_vaddr) = 8;
+	OFFSET(cpu_data, cpu_regmap_paddr)     = 63 * 8;
+	OFFSET(cpu_data, ed_mmio)              = 59 * 8;
+	OFFSET(cpu_data, utt_mmio)             = 62 * 8;
+}
+
 static struct platform_initialization offsets[] = {
 	{ "iPhone10,1", "16C101", offsets__iphone10_1__16C101 },
 	{ "iPhone10,6", "16E227", offsets__iphone10_1__16C101 },
 	{ "iPhone10,1", "16G77",  offsets__iphone10_1__16C101 },
+	{ "iPhone10,1", "17B102", offsets__iphone10_1__17B102 },
 };
 
 // ---- KTRR parameter initialization -------------------------------------------------------------
@@ -99,10 +109,28 @@ parameters__iphone10_1__16G77() {
 	ADDRESS(CpuDataEntries)     = SLIDE(0xFFFFFFF0076ACD48);
 }
 
+static void
+parameters__iphone10_1__17B102() {
+	gPhysBase                   = kernel_read64(SLIDE(0xFFFFFFF007906B68));
+	gVirtBase                   = kernel_read64(SLIDE(0xFFFFFFF007906B70));
+	rorgn_begin                 = kernel_read64(SLIDE(0xFFFFFFF007906E58));
+	rorgn_end                   = kernel_read64(SLIDE(0xFFFFFFF007906E60));
+	cpu_ttep                    = kernel_read64(SLIDE(0xFFFFFFF0079067C0));
+	kernel_pmap                 = kernel_read64(SLIDE(0xFFFFFFF0079067A0));
+	ADDRESS(pmap_find_phys)     = SLIDE(0xFFFFFFF007CC39CC);
+	ADDRESS(ml_phys_read_data)  = SLIDE(0xFFFFFFF007CCFF0C);
+	ADDRESS(ml_phys_write_data) = SLIDE(0xFFFFFFF007CD01B0);
+	ADDRESS(ml_io_map)          = SLIDE(0xFFFFFFF007CD5864);
+	ADDRESS(ldr_w0_x0__ret)     = SLIDE(0xFFFFFFF007BD2EFC);
+	ADDRESS(str_w1_x0__ret)     = SLIDE(0xFFFFFFF007BD2F80);
+	ADDRESS(CpuDataEntries)     = SLIDE(0xFFFFFFF0091CACB8);
+}
+
 static struct platform_initialization parameters[] = {
 	{ "iPhone10,1", "16C101", parameters__iphone10_1__16C101 },
 	{ "iPhone10,6", "16E227", parameters__iphone10_6__16E227 },
 	{ "iPhone10,1", "16G77",  parameters__iphone10_1__16G77  },
+	{ "iPhone10,1", "17B102", parameters__iphone10_1__17B102 },
 };
 
 // ---- Public API --------------------------------------------------------------------------------

@@ -41,10 +41,26 @@ offsets__iphone10_1__16C101() {
 	VTABLE_INDEX(IOUserClient, getTargetAndTrapForIndex)     = 0x5c0 / 8;
 }
 
+static void
+offsets__iphone10_1__17B102() {
+	OFFSET(ipc_port, ip_kobject)                             = 104;
+	OFFSET(proc, p_ucred)                                    = 0x100;
+	OFFSET(task, bsd_info)                                   = 0x380;
+	SIZE(IOExternalTrap)                                     = 24;
+	OFFSET(IOExternalTrap, object)                           = 0;
+	OFFSET(IOExternalTrap, function)                         = 8;
+	OFFSET(IOExternalTrap, offset)                           = 16;
+	OFFSET(IORegistryEntry, reserved)                        = 16;
+	OFFSET(IORegistryEntry__ExpansionData, fRegistryEntryID) = 8;
+	VTABLE_INDEX(IOUserClient, getExternalTrapForIndex)      = 0x5c0 / 8;
+	VTABLE_INDEX(IOUserClient, getTargetAndTrapForIndex)     = 0x5c8 / 8;
+}
+
 static struct platform_initialization offsets[] = {
 	{ "iPhone10,1", "16C101", offsets__iphone10_1__16C101 },
 	{ "iPhone10,6", "16E227", offsets__iphone10_1__16C101 },
 	{ "iPhone10,1", "16G77",  offsets__iphone10_1__16C101 },
+	{ "iPhone10,1", "17B102", offsets__iphone10_1__17B102 },
 };
 
 // ---- Address initialization --------------------------------------------------------------------
@@ -72,10 +88,17 @@ addresses__iphone10_1__16G77() {
 	ADDRESS(IORegistryEntry__getRegistryEntryID) = SLIDE(0xFFFFFFF007594320);
 }
 
+static void
+addresses__iphone10_1__17B102() {
+	ADDRESS(IOUserClient__vtable)                = SLIDE(0xFFFFFFF00791CCD8);
+	ADDRESS(IORegistryEntry__getRegistryEntryID) = SLIDE(0xFFFFFFF0080FFDE0);
+}
+
 static struct platform_initialization addresses[] = {
 	{ "iPhone10,1", "16C101", addresses__iphone10_1__16C101 },
 	{ "iPhone10,6", "16E227", addresses__iphone10_6__16E227 },
 	{ "iPhone10,1", "16G77",  addresses__iphone10_1__16G77  },
+	{ "iPhone10,1", "17B102", addresses__iphone10_1__17B102 },
 };
 
 // ---- Public API --------------------------------------------------------------------------------

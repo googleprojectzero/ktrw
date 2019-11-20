@@ -21,6 +21,7 @@
 #define KTRR_BYPASS__H_
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /*
@@ -55,5 +56,15 @@ bool have_ktrr_bypass(void);
  * 	this restriction for a fully persistent KTRR bypass, but I have not implemented that here.
  */
 void ktrr_bypass(void);
+
+/*
+ * ktrr_vm_protect
+ *
+ * Description:
+ * 	Set virtual memory protection on an address range.
+ *
+ * 	This is stronger than kernel_vm_protect() since it can be used to make memory executable.
+ */
+void ktrr_vm_protect(uint64_t address, size_t size, int prot);
 
 #endif

@@ -27,6 +27,7 @@
 #include "kernel_parameters.h"
 #include "kernel_tasks.h"
 #include "log.h"
+#include "mach_vm.h"
 
 // Check if the given address is the kernel base.
 static bool
@@ -124,6 +125,78 @@ init_with_current_task() {
 	return init_with_kernel_image_address(realhost);
 }
 
+// Try to find the kernel base using an unsafe heap scan to sample kernel pointers. As suggested by
+// the function name, this method is UNSAFE and may panic the device. It should only be used in the
+// absence of better options!
+static bool
+init_with_unsafe_heap_scan() {
+	WARNING("Could not find the kernel base address");
+	WARNING("Trying to find the kernel base address using an unsafe heap scan!");
+	uint64_t kernel_region_base = 0xfffffff000000000;
+	uint64_t kernel_region_end  = 0xfffffffbffffc000;
+	// Try and find a pointer in the kernel heap to data in the kernel image. We'll take the
+	// smallest such pointer.
+	uint64_t kernel_ptr = (uint64_t)(-1);
+	mach_vm_address_t address = 0;
+	for (;;) {
+		// Get the next memory region.
+		mach_vm_size_t size = 0;
+		uint32_t depth = 2;
+		struct vm_region_submap_info_64 info;
+		mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
+		kern_return_t kr = mach_vm_region_recurse(kernel_task_port, &address, &size,
+				&depth, (vm_region_recurse_info_t) &info, &count);
+		if (kr != KERN_SUCCESS) {
+			break;
+		}
+		// Skip any region that is not on the heap, not in a submap, not readable and
+		// writable, or not fully mapped.
+		int prot = VM_PROT_READ | VM_PROT_WRITE;
+		if (info.user_tag != 12
+		    || depth != 1
+		    || (info.protection & prot) != prot
+		    || info.pages_resident * 0x4000 != size) {
+			goto next;
+		}
+		// Read the first word of each page in this region.
+		for (size_t offset = 0; offset < size; offset += 0x4000) {
+			uint64_t value = 0;
+			bool ok = kernel_read(address + offset, &value, sizeof(value));
+			if (ok
+			    && kernel_region_base <= value
+			    && value < kernel_region_end
+			    && value < kernel_ptr) {
+				kernel_ptr = value;
+			}
+		}
+next:
+		address += size;
+	}
+	// If we didn't find any such pointer, abort.
+	if (kernel_ptr == (uint64_t)(-1)) {
+		return false;
+	}
+	DEBUG_TRACE(1, "Found kernel pointer %p", (void *)kernel_ptr);
+	// Now that we have a pointer, we want to scan pages until we reach the kernel's Mach-O
+	// header. Unfortunately, the layout of the kernel differs on different iOS versions. iOS
+	// 12.4 uses the old kernelcache format; on these kernelcaches, kernel_ptr will usually
+	// point into one of the __PRELINK sections that lies before the Mach-O header in __TEXT.
+	// On the other hand, iOS 13 uses the newer kernelcache format in which the __PRELINK
+	// sections are empty and __TEXT is mapped first, and hence kernel_ptr lies after the
+	// Mach-O header. We'll program for the newer kernelcache format.
+	uint64_t page = kernel_ptr & ~0x3fff;
+	for (;;) {
+		bool found = is_kernel_base(page);
+		if (found) {
+			kernel_slide = page - STATIC_ADDRESS(kernel_base);
+			did_set_kernel_slide();
+			return true;
+		}
+		page -= 0x4000;
+	}
+	return false;
+}
+
 bool
 kernel_slide_init() {
 	if (kernel_slide != 0) {
@@ -145,6 +218,11 @@ kernel_slide_init() {
 		if (ok) {
 			return true;
 		}
+	}
+	// Try an unsafe heap scan. This is a last resort!
+	ok = init_with_unsafe_heap_scan();
+	if (ok) {
+		return true;
 	}
 	// No available method.
 	ERROR("Could not determine the kernel slide");

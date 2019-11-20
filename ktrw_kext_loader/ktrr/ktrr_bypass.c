@@ -21,6 +21,7 @@
 
 #include <assert.h>
 #include <mach/mach.h>
+#include <mach/mach_time.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -405,29 +406,39 @@ aarch64_page_table_lookup(uint64_t ttb,
 }
 
 /*
- * clear_pxn_from_l0_l1_l2_ttes
+ * clear_pxn_from_tte
+ *
+ * Description:
+ * 	Clears the PXN bit from a TTE in a translation table page.
+ */
+static uint64_t
+clear_pxn_from_tte(unsigned level, uint64_t tte) {
+	if (0 <= level && level <= 2) {	// L0, L1, L2
+		if ((tte & 0x3) == 0x3) {	// Table
+			tte &= ~(1uLL << 59);	// PXNTable
+		} else if (level == 2 && (tte & 0x3) == 0x1) {	// Block
+			tte &= ~(1uLL << 53);	// PXN
+		}
+	}
+	if (level == 3) {	// L3
+		if ((tte & 0x3) == 0x3) {	// Page
+			tte &= ~(1uLL << 53);	// PXN
+		}
+	}
+	return tte;
+}
+
+/*
+ * clear_pxn_from_ttes
  *
  * Description:
  * 	Clears the PXN bit from TTEs in a translation table page.
  */
 static void
-clear_pxn_from_ttes(unsigned level, void *page) {
-	uint64_t *ttes = page;
+clear_pxn_from_ttes(unsigned level, void *tt_page) {
+	uint64_t *ttes = tt_page;
 	for (size_t i = 0; i < page_size / sizeof(*ttes); i++) {
-		uint64_t tte = ttes[i];
-		if (0 <= level && level <= 2) { // L0, L1, L2
-			if ((tte & 0x3) == 0x3) { // Table
-				tte &= ~(1uLL << 59); // PXNTable
-			} else if (level == 2 && (tte & 0x3) == 0x1) { // Block
-				tte &= ~(1uLL << 53); // PXN
-			}
-		}
-		if (level == 3) { // L3
-			if ((tte & 0x3) == 0x3) { // Page
-				tte &= ~(1uLL << 53); // PXN
-			}
-		}
-		ttes[i] = tte;
+		ttes[i] = clear_pxn_from_tte(level, ttes[i]);
 	}
 }
 
@@ -446,7 +457,8 @@ remap_rorgn_page(uint64_t *ttbr1_el1, uint64_t kvaddr) {
 	uint64_t addr_p = aarch64_page_table_lookup(l1_table_p, kvaddr,
 			&p_l1_tte, &l1_tte, &p_l2_tte, &l2_tte, &p_l3_tte, &l3_tte);
 	if (rorgn_begin <= p_l1_tte && p_l1_tte < rorgn_end) {
-		// The L1 TTE is in the RoRgn, so TTBR1_EL1 points into a RoRgn page. Remap the L1 table.
+		// The L1 TTE is in the RoRgn, so TTBR1_EL1 points into a RoRgn page. Remap the L1
+		// table.
 		uint64_t new_l1_table_v = kernel_vm_allocate(page_size);
 		uint64_t l1_table_v = l1_table_p - gPhysBase + gVirtBase;
 		kernel_read(l1_table_v, buf, page_size);
@@ -571,4 +583,23 @@ ktrr_bypass() {
 	// Join the thread.
 	run = false;
 	pthread_join(pthread, NULL);
+}
+
+void
+ktrr_vm_protect(uint64_t address, size_t size, int prot) {
+	kernel_vm_protect(address, size, prot);
+	if (prot & VM_PROT_EXECUTE) {
+		const uint64_t page_mask = ~(page_size - 1);
+		uint64_t start = address & page_mask;
+		uint64_t end = (address + size + page_size - 1) & page_mask;
+		for (uint64_t page = start; page < end; page += page_size) {
+			uint64_t p_l3_tte = 0, l3_tte = 0;
+			uint64_t page_p = aarch64_page_table_lookup(ttbr1_el1, page,
+					NULL, NULL, NULL, NULL, &p_l3_tte, &l3_tte);
+			if (page_p != -1) {
+				uint64_t new_l3_tte = clear_pxn_from_tte(3, l3_tte);
+				phys_write64(p_l3_tte, new_l3_tte);
+			}
+		}
+	}
 }

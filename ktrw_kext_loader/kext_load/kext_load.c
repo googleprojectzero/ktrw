@@ -32,6 +32,7 @@
 #include "kernel_call.h"
 #include "kernel_memory.h"
 #include "kernel_slide.h"
+#include "ktrr_bypass.h"
 #include "log.h"
 #include "map_file.h"
 #include "resolve_symbol.h"
@@ -352,8 +353,6 @@ link_kext(void *mapping, struct macho_info *info) {
 	const struct dysymtab_command *dysymtab = info->dysymtab;
 	const struct nlist_64 *nlist = info->nlist;
 	const struct relocation_info *extrel = info->extrel;
-	// Load the symbol database for resolving external symbols in the kext.
-	load_symbol_database();
 	// Process the dysymtab's external relocations.
 	for (uint32_t extrel_idx = 0; extrel_idx < dysymtab->nextrel; extrel_idx++) {
 		const struct relocation_info *ri = &extrel[extrel_idx];
@@ -418,7 +417,11 @@ map_kext(void *mapping, struct macho_info *info, uint64_t *kext_address) {
 			uint64_t vmaddr = kext + sc->vmaddr;
 			DEBUG_TRACE(1, "Protecting segment %llx-%llx as %x",
 					sc->vmaddr, sc->vmaddr + sc->vmsize, sc->initprot);
-			kernel_vm_protect(vmaddr, sc->vmsize, sc->initprot);
+			// On iOS 12.4 it was sufficient to call mach_vm_protect(), but as of iOS
+			// 13 that does not clear the page descriptor's PXN bit when setting
+			// execute permissions; thus, it's necessary to manually correct the page
+			// table bits ourselves.
+			ktrr_vm_protect(vmaddr, sc->vmsize, sc->initprot);
 		}
 		lc = (struct load_command *)((uintptr_t)lc + lc->cmdsize);
 	}
@@ -440,38 +443,43 @@ load_and_run_kext(const char *path, void *data, size_t size, uint64_t argument) 
 	struct macho_info info;
 	bool ok = validate_macho(path, mh, size, KEXT_START_SYMBOL, &info);
 	if (!ok) {
-		return false;
+		return 0;
 	}
 	// Map the kext in userspace. This will need to be freed.
 	void *userspace_mapping;
 	ok = map_macho(&info, &userspace_mapping);
 	if (!ok) {
-		return false;
+		return 0;
 	}
 	// Link the kext.
 	ok = link_kext(userspace_mapping, &info);
 	if (!ok) {
 		free(userspace_mapping);
-		return false;
+		return 0;
 	}
 	// Map the kext. This also performs internal relocations.
-	uint64_t kext;
-	ok = map_kext(userspace_mapping, &info, &kext);
+	uint64_t kext_address;
+	ok = map_kext(userspace_mapping, &info, &kext_address);
 	free(userspace_mapping);
 	if (!ok) {
-		return false;
+		return 0;
 	}
 	// Start the kext.
-	uint64_t kext_start = kext + info.entry;
+	uint64_t kext_start = kext_address + info.entry;
 	DEBUG_TRACE(1, "Starting kext %s", path);
 	sleep(1);
 	__unused uint32_t ret;
 	ret = kernel_call_7(kext_start, 1, argument);
 	DEBUG_TRACE(1, "_kext_start returned 0x%x", ret);
-	return kext;
+	return kext_address;
 }
 
 // ---- Public API --------------------------------------------------------------------------------
+
+bool
+kext_load_set_kernel_symbol_database(const char *path) {
+	return load_symbol_database(path);
+}
 
 uint64_t
 kext_load(const char *file, uint64_t argument) {

@@ -33,12 +33,9 @@ that the KTRR bypass is not persistent: it will be lost once the device sleeps.
 Using KTRW
 ---------------------------------------------------------------------------------------------------
 
-KTRW is not a kernel exploit, but it needs access to the kernel task port in order to work. By
-default, it expects the kernel task port to be exposed as host special port 4 and expects the
-kernel base or kernel slide to be stashed in `task_info(TASK_DYLD_INFO)`.
-
 KTRW consists of three components: the `ktrw_gdb_stub.ikext` kernel extension, the `ktrw_usb_proxy`
-USB-to-TCP proxy utility, and the `ktrw_kext_loader` iOS app.
+USB-to-TCP proxy utility, and the `ktrw_kext_loader` tool to load kernel extensions. Depending on
+how KTRW is being used, `ktrw_kext_loader` can be built as a command line tool or as an iOS app.
 
 First, build the kernel extension:
 
@@ -58,15 +55,43 @@ over TCP so that LLDB can connect. It will print the data being exchanged over t
 
 	$ ./ktrw_usb_proxy 39399
 
-Next, open the `ktw_kext_loader` project in Xcode. Run the app on a connected A11 iPhone to load
-`ktrw_gdb_stub.ikext` into the kernel and start debugging.
+Next, build `ktrw_kext_loader`. There are two modes of operation (depending on how the kernel task
+port is being exposed), and the build process depends on which is being used.
 
-Once the kext has loaded, it will claim one CPU core for itself and halt the remaining cores. It
-will also hijack the Synopsys USB 2.0 OTG controller from the kernel so that it can communicate
-with the host. As a result, the host will not see the iPhone as an iOS device and the phone (once
-it has been resumed) will not be able to send data over USB as normal.
+If KTRW is being run with [checkra1n], then build `ktrw_kext_loader` as a command-line tool and scp
+the necessary files to the device:
+
+	$ cd ktrw_kext_loader
+	$ make
+	$ codesign -s '*' -f --entitlements ktrw_kext_loader.entitlements ktrw_kext_loader
+	$ scp ktrw_kext_loader iphone:
+	$ scp -r kernel_symbols iphone:
+	$ scp kexts/ktrw_gdb_stub.ikext iphone:
+
+Once all the necessary files are in place, ssh into the phone and run the kext loader:
+
+	$ ssh iphone
+	# ./ktrw_kext_loader ktrw_gdb_stub.ikext
+	[+] Platform: iPhone10,1 17B102
+	[+] task_for_pid(0) = 0x907
+	[!] Could not find the kernel base address
+	[!] Trying to find the kernel base address using an unsafe heap scan!
+	[+] KASLR slide is 0x178e4000
+	[+] Kext ktrw_gdb_stub.ikext loaded at address 0xffffffe0ca1a0000
+
+A separate process should be used if the kernel task port is exposed via host special port 4, for
+example after a kernel exploit. In this case, simply open the `ktw_kext_loader` project in Xcode
+and run the app on a connected A11 iPhone to load `ktrw_gdb_stub.ikext` into the kernel and start
+debugging.
+
+Once the kext has loaded (using either method), it will claim one CPU core for itself and halt the
+remaining cores. It will also hijack the Synopsys USB 2.0 OTG controller from the kernel so that it
+can communicate with the host. As a result, the host will not see the iPhone as an iOS device and
+the phone (once it has been resumed) will not be able to send data over USB as normal.
 
 After this, you are ready to debug the device.
+
+[checkra1n]: https://checkra.in
 
 
 Debugging with LLDB
@@ -221,6 +246,14 @@ kernelcache and start downloading data off the device. This may take a long time
 
 You will also need to be sure to always use hardware breakpoints, as software breakpoints are
 currently unsupported.
+
+
+Compatibility with Checkra1n
+---------------------------------------------------------------------------------------------------
+
+I'm actively working on making KTRW compatible with [checkra1n]. At the moment, KTRW will only run
+on an iPhone 8 on iOS 13.2.2 compromised with checkra1n for a short time before panicking. iOS 12.4
+compromised with SockPuppet is the latest known stable version.
 
 
 Adding support for new platforms
