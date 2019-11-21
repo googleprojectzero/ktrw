@@ -48,10 +48,9 @@ offsets__iphone10_1__17B102() {
 }
 
 static struct platform_initialization offsets[] = {
-	{ "iPhone10,1", "16C101", offsets__iphone10_1__16C101 },
-	{ "iPhone10,6", "16E227", offsets__iphone10_1__16C101 },
-	{ "iPhone10,1", "16G77",  offsets__iphone10_1__16C101 },
-	{ "iPhone10,1", "17B102", offsets__iphone10_1__17B102 },
+	{ "iPhone10,1",            "16C101-16G77", offsets__iphone10_1__16C101 },
+	{ "iPhone10,6",            "16E227",       offsets__iphone10_1__16C101 },
+	{ "iPhone10,1|iPhone10,4", "17B102",       offsets__iphone10_1__17B102 },
 };
 
 // ---- KTRR parameter initialization -------------------------------------------------------------
@@ -127,10 +126,10 @@ parameters__iphone10_1__17B102() {
 }
 
 static struct platform_initialization parameters[] = {
-	{ "iPhone10,1", "16C101", parameters__iphone10_1__16C101 },
-	{ "iPhone10,6", "16E227", parameters__iphone10_6__16E227 },
-	{ "iPhone10,1", "16G77",  parameters__iphone10_1__16G77  },
-	{ "iPhone10,1", "17B102", parameters__iphone10_1__17B102 },
+	{ "iPhone10,1",            "16C101", parameters__iphone10_1__16C101 },
+	{ "iPhone10,6",            "16E227", parameters__iphone10_6__16E227 },
+	{ "iPhone10,1",            "16G77",  parameters__iphone10_1__16G77  },
+	{ "iPhone10,1|iPhone10,4", "17B102", parameters__iphone10_1__17B102 },
 };
 
 // ---- Public API --------------------------------------------------------------------------------
