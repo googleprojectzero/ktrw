@@ -92,11 +92,21 @@ debug_cpu_restart(int cpu_id) {
 
 static void
 debug_cpu_wait_for_halt(int cpu_id) {
+	// Wait for the halt to show up in DBGWRAP.
 	for (;;) {
 		if (rDBGWRAP(cpu_id) & DBGWRAP_CpuIsHalted) {
 			break;
 		}
 	}
+	// Wait for the halt to show up in EDPRSR. This shouldn't be necessary but it's helpful to
+	// know that both registers agree.
+	for (;;) {
+		if (rEDPRSR(cpu_id) & EDPRSR_HALTED) {
+			break;
+		}
+	}
+	// Unlock the OS Lock to enable debug access.
+	rOSLAR(cpu_id) = 0;
 }
 
 static void
@@ -977,6 +987,11 @@ prepare_cpus_for_debugging() {
 			rEDLAR(cpu_id) = 0xC5ACCE55;
 		}
 	}
+	for (int cpu_id = 0; cpu_id < CPU_COUNT; cpu_id++) {
+		if (valid_cpu_id(cpu_id)) {
+			while (rEDLSR(cpu_id) & EDLSR_SLK) {}
+		}
+	}
 	// Halt all CPUs. Ensure that this is done safely to minimize the chance of panicking the
 	// system.
 	for (int cpu_id = 0; cpu_id < CPU_COUNT; cpu_id++) {
@@ -1119,6 +1134,8 @@ check_cpu(int cpu_id) {
 	if (!newly_halted) {
 		return;
 	}
+	// Since we're newly halted, unlock the OS Lock to enable debug access.
+	rOSLAR(cpu_id) = 0;
 	// Now we need to check EDSCR so that we can report the reason for the exception.
 	uint32_t edscr = rEDSCR(cpu_id);
 	// The bits we care about are EDSCR.STATUS, which contain the debug status.

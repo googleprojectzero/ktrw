@@ -70,6 +70,9 @@ extern uint64_t dbgwrap_registers[];
 #define EDPRSR_SDR		(1 << 11)
 #define EDPRSR_HALTED		(1 << 4)
 
+#define EDLSR_SLI		(1 << 0)
+#define EDLSR_SLK		(1 << 1)
+
 #define DBGWRAP_Halt		(1uL << 31)
 #define DBGWRAP_Restart		(1uL << 30)
 #define DBGWRAP_HaltAfterReset	(1uL << 29)	// EDECR.RCE ?
