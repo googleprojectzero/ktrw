@@ -49,8 +49,15 @@ extern size_t OFFSET(proc, task);
 extern size_t OFFSET(proc, p_pid);
 
 // Parameters for struct task.
+extern size_t OFFSET(task, tasks);
 extern size_t OFFSET(task, itk_space);
 extern size_t OFFSET(task, bsd_info);
+
+// Parameters for struct cpu_data
+extern size_t OFFSET(cpu_data, cpu_active_thread);
+
+// Parameters for struct thread
+extern size_t OFFSET(thread, task);
 
 // The static address of the allproc variable.
 extern uint64_t STATIC_ADDRESS(allproc);

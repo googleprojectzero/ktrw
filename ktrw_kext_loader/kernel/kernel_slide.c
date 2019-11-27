@@ -125,6 +125,103 @@ init_with_current_task() {
 	return init_with_kernel_image_address(realhost);
 }
 
+typedef uint64_t kern_addr_t;
+static kern_addr_t _tasks = 0;
+// Find the task via iterate the kernel_task.tasks
+static kern_addr_t get_pid_task_via_iter_tasks_queue(uint32_t pid, kern_addr_t task) {
+  kern_addr_t task_addr = task;
+  if (!_tasks) {
+    while (task_addr != 0) {
+      kern_addr_t proc_addr = kernel_read64(task_addr + OFFSET(task, bsd_info));
+      uint32_t pid_found    = kernel_read32(proc_addr + OFFSET(proc, p_pid));
+      if (pid_found == 0) {
+        // KERN_STRUCT_OFFSET(queue_entry, prev) == 8
+        _tasks = kernel_read64(task_addr + OFFSET(task, tasks) + 8);
+        break;
+      }
+      // KERN_STRUCT_OFFSET(queue_entry, prev) == 8
+      task_addr = kernel_read64(task_addr + OFFSET(task, tasks) + 8);
+    }
+  }
+
+  // KERN_STRUCT_OFFSET(queue_entry, next) == 0
+  task_addr = kernel_read64(_tasks + 0);
+  do {
+    kern_addr_t proc_addr = kernel_read64(task_addr + OFFSET(task, bsd_info));
+    uint32_t pid_found    = kernel_read32(proc_addr + OFFSET(proc, p_pid));
+    if (pid_found == pid) {
+      return task_addr;
+    }
+    
+    // KERN_STRUCT_OFFSET(queue_entry, next) == 0
+    task_addr = kernel_read64(task_addr + OFFSET(task, tasks) + 0);
+  } while (task_addr != _tasks);
+  return 0;
+}
+
+static kern_addr_t _kernproc;
+static void handle_cpu_data_trick(kern_addr_t cpu_data_kern_addr) {
+  kern_addr_t cpu_active_thread = kernel_read64(cpu_data_kern_addr + OFFSET(cpu_data, cpu_active_thread));
+  assert(cpu_active_thread);
+  kern_addr_t task_kern_addr = kernel_read64(cpu_active_thread + OFFSET(thread, task));
+  assert(task_kern_addr);
+  kern_addr_t _kernel_task = get_pid_task_via_iter_tasks_queue(0, task_kern_addr);
+  assert(_kernel_task);
+  // Kernproc = &proc0
+  _kernproc = kernel_read64(_kernel_task + OFFSET(task, bsd_info));
+  assert(_kernproc);
+}
+
+static kern_addr_t brute_force_kernel_base(kern_addr_t kern_data_segment_variable_kern_addr) {
+  kern_addr_t addr = kern_data_segment_variable_kern_addr & ~0x3fff;
+  uint32_t magic   = kernel_read32(addr);
+  while (magic != MH_MAGIC_64) {
+    addr -= 0x4000;
+    magic = kernel_read32(addr);
+  }
+  return addr;
+}
+
+#define VM_KERN_MEMORY_CPU 9
+// cpu_data_alloc() with VM_KERN_MEMORY_CPU tag, and we can use the cpu_data.cpu_active_thread
+// to find the kernel_task, kernproc etc.
+static bool init_with_cpu_data_region() {
+  kern_addr_t cpu_data_kern_addr = 0;
+  struct vm_region_submap_short_info_64 submap_info;
+  mach_msg_type_number_t count = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
+  mach_vm_address_t addr       = 0;
+  mach_vm_size_t size          = 0;
+  natural_t depth              = 0;
+  while (true) {
+    kern_return_t kr =
+        mach_vm_region_recurse(kernel_task_port, &addr, &size, &depth, (vm_region_recurse_info_t)&submap_info, &count);
+    if (kr == KERN_INVALID_ADDRESS || kr != KERN_SUCCESS) {
+      break;
+    }
+    /*if (0 && submap_info.is_submap) {
+      ++depth;
+    } else */{
+      // Catch cpu_data_alloc
+      if (submap_info.user_tag == VM_KERN_MEMORY_CPU) {
+        unsigned short cpu_number = kernel_read32(addr);
+        if (cpu_number == 0x1) {
+          cpu_data_kern_addr = addr;
+          break;
+        }
+      }
+      addr += size;
+    }
+  }
+  if (!cpu_data_kern_addr)
+    return false;
+  handle_cpu_data_trick(cpu_data_kern_addr);
+  // Kernproc = &proc0
+  kern_addr_t _kernbase = brute_force_kernel_base(_kernproc);
+  kernel_slide          = _kernbase - STATIC_ADDRESS(kernel_base);
+  did_set_kernel_slide();
+  return true;
+}
+
 // Try to find the kernel base using an unsafe heap scan to sample kernel pointers. As suggested by
 // the function name, this method is UNSAFE and may panic the device. It should only be used in the
 // absence of better options!
@@ -219,6 +316,11 @@ kernel_slide_init() {
 			return true;
 		}
 	}
+	// Try to parse cpu_data
+  ok = init_with_cpu_data_region();
+  if(ok) {
+    return true;
+  }
 	// Try an unsafe heap scan. This is a last resort!
 	ok = init_with_unsafe_heap_scan();
 	if (ok) {

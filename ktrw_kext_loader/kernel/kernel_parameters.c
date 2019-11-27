@@ -36,8 +36,11 @@ offsets__iphone10_1__16C101() {
 	OFFSET(proc, p_list_next)               = 0;
 	OFFSET(proc, task)                      = 0x10;
 	OFFSET(proc, p_pid)                     = 0x60;
+	OFFSET(task, tasks)                     = 0x28;
 	OFFSET(task, itk_space)                 = 0x300;
 	OFFSET(task, bsd_info)                  = 0x358;
+	OFFSET(thread, task)                    = 0x370;
+	OFFSET(cpu_data, cpu_active_thread)     = 0x48;
 	STATIC_ADDRESS(kernel_base)             = 0xFFFFFFF007004000;
 }
 
