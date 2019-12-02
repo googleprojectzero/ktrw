@@ -21,6 +21,7 @@
 #define USB__H_
 
 #include <stddef.h>
+#include <stdint.h>
 
 // The amount of memory needed for the USB stack.
 #define USB_STACK_MEMORY_SIZE	0x4000
@@ -88,5 +89,36 @@ size_t usb_write(const void *buffer, size_t size);
  * 	Send any data written via usb_write() over USB to the host.
  */
 void usb_write_commit(void);
+
+// ---- Transfer API ------------------------------------------------------------------------------
+
+/*
+ * usb_in_transfer
+ *
+ * Description:
+ * 	Perform an IN transfer on the specified endpoint.
+ *
+ * 	The data buffer must remain alive until the completion callback is invoked.
+ */
+void usb_in_transfer(uint8_t ep_addr, const void *data, uint32_t size, void (*callback)(void));
+
+/*
+ * usb_out_transfer
+ *
+ * Description:
+ * 	Perform an OUT transfer on the specified endpoint.
+ */
+void usb_out_transfer(uint8_t ep_addr, void *data, uint32_t size,
+		void (*callback)(void *data, uint32_t size, uint32_t transferred));
+
+/*
+ * usb_out_transfer_dma
+ *
+ * Description:
+ * 	Perform an OUT transfer on the specified endpoint, optimized for when the data buffer is
+ * 	suitable for DMA.
+ */
+void usb_out_transfer_dma(uint8_t ep_addr, void *data, uint32_t dma, uint32_t size,
+		void (*callback)(void *data, uint32_t size, uint32_t transferred));
 
 #endif

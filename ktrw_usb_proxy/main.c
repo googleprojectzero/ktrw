@@ -160,10 +160,9 @@ ktrw_usb_open(io_service_t service, mach_port_t notification_port_set) {
 		printf("Error: Could not get the number of endpoints for the KTRW USB device interface\n");
 		goto fail_4;
 	}
-	if (numEndpoints != 1) {
-		printf("Error: Unexpected number of endpoints for the KTRW USB device interface: %u\n",
-				numEndpoints);
-		goto fail_4;
+	if (numEndpoints != 2) {
+		printf("Warning: Unexpected number of endpoints for the KTRW USB device "
+				"interface: %u\n", numEndpoints);
 	}
 	// Register a Mach port to receive asynchronous I/O completion notifications.
 	mach_port_t io_port = MACH_PORT_NULL;
