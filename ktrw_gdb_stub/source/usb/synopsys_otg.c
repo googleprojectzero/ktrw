@@ -223,9 +223,9 @@ struct device_descriptor device_descriptor = {
 struct full_configuration_descriptor {
 	struct configuration_descriptor configuration;
 	struct interface_descriptor     interface;
-	struct endpoint_descriptor      endpoint_0;
-	struct endpoint_descriptor      endpoint_1;
-	struct endpoint_descriptor      endpoint_2;
+	// EP 0 does not get an entry in the configuration descriptor.
+	struct endpoint_descriptor      endpoint_81;
+	struct endpoint_descriptor      endpoint_02;
 } __attribute__((packed));
 
 struct full_configuration_descriptor configuration_descriptor = {
@@ -250,24 +250,16 @@ struct full_configuration_descriptor configuration_descriptor = {
 		.bInterfaceProtocol = 0x37,
 		.iInterface         = 0,
 	},
-	.endpoint_0 = {
-		.bLength          = sizeof(configuration_descriptor.endpoint_0),
-		.bDescriptorType  = 5,
-		.bEndpointAddress = 0x00,
-		.bmAttributes     = 0,		// Control
-		.wMaxPacketSize   = EP0_MAX_PACKET_SIZE,
-		.bInterval        = 0,
-	},
-	.endpoint_1 = {
-		.bLength          = sizeof(configuration_descriptor.endpoint_1),
+	.endpoint_81 = {
+		.bLength          = sizeof(configuration_descriptor.endpoint_81),
 		.bDescriptorType  = 5,
 		.bEndpointAddress = 0x81,	// IN
 		.bmAttributes     = 3,		// Interrupt
 		.wMaxPacketSize   = INTR_EP_MAX_PACKET_SIZE,
 		.bInterval        = 1,		// Poll every 125us
 	},
-	.endpoint_2 = {
-		.bLength          = sizeof(configuration_descriptor.endpoint_2),
+	.endpoint_02 = {
+		.bLength          = sizeof(configuration_descriptor.endpoint_02),
 		.bDescriptorType  = 5,
 		.bEndpointAddress = 0x02,	// OUT
 		.bmAttributes     = 2,		// Bulk
@@ -1299,11 +1291,11 @@ usb_reset() {
 	reg_write(rDAINTMSK, 0);
 	ep_out_activate(&ep0_out, 0, 0, EP0_MAX_PACKET_SIZE);
 	ep_in_activate(&ep0_in, 0, 0, EP0_MAX_PACKET_SIZE, 0);
-	uint8_t ep_type = configuration_descriptor.endpoint_1.bmAttributes;
-	uint16_t ep_mps = configuration_descriptor.endpoint_1.wMaxPacketSize;
+	uint8_t ep_type = configuration_descriptor.endpoint_81.bmAttributes;
+	uint16_t ep_mps = configuration_descriptor.endpoint_81.wMaxPacketSize;
 	ep_in_activate(&ep1_in, 1, ep_type, ep_mps, 2);
-	ep_type = configuration_descriptor.endpoint_2.bmAttributes;
-	ep_mps = configuration_descriptor.endpoint_2.wMaxPacketSize;
+	ep_type = configuration_descriptor.endpoint_02.bmAttributes;
+	ep_mps = configuration_descriptor.endpoint_02.wMaxPacketSize;
 	ep_out_activate(&ep2_out, 2, ep_type, ep_mps);
 	ep_out_recv(&ep0_out);
 }

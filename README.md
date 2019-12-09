@@ -224,10 +224,6 @@ Watchpoints are also supported:
 LLDB limits watchpoints to 1, 2, 4, or 8 bytes in size, even though the hardware supports even
 larger watchpoints.
 
-Unfortunately, older versions of LLDB do not automatically detect kernelcaches on iOS 12.2 or later
-because the kASLR slide has a finer granularity. However, kernelcache detection should work as
-expected on HEAD when LLDB is built from source.
-
 
 Debugging with IDA Pro
 ---------------------------------------------------------------------------------------------------
