@@ -682,6 +682,12 @@ ep_in_send_compute_xfer(struct endpoint_state *ep,
 			if (xfer_size > dma_left) {
 				xfer_size = dma_left;
 			}
+			// Cap the transfer size by the width of DIEPTSIZ.xfersize. We round down
+			// one full packet to ensure that we don't send a partial packet and signal
+			// the end of the transfer.
+			if (xfer_size > 0x7ffff) {
+				xfer_size = 0x7ffff + 1 - ep->max_packet_size;
+			}
 			// TODO: Consider GHWCFG3!
 			// If we are sending at least one full packet of data on EP !0 IN, then
 			// compute the number of packets we need to send. If the data we're sending
@@ -865,6 +871,13 @@ ep_out_recv_compute_xfer(struct endpoint_state *ep,
 		if (xfer_size > dma_left) {
 			xfer_size = dma_left;
 		}
+		// Cap the transfer size by the width of DIEPTSIZ.xfersize. We round down
+		// one full packet to ensure that we don't send a partial packet and signal
+		// the end of the transfer.
+		if (xfer_size > 0x7ffff) {
+			xfer_size = 0x7ffff + 1 - ep->max_packet_size;
+		}
+		// TODO: Consider GHWCFG3!
 		// Compute the number of packets needed and round the transfer size up to a packet
 		// boundary.
 		packet_count = (xfer_size + ep->max_packet_size - 1) / ep->max_packet_size;
@@ -1067,6 +1080,8 @@ ep_out_recv_data_done(struct endpoint_state *ep) {
 	ep_out_recv_compute_xfer(ep, &dma_offset, &hw_xfer_size, &packet_count);
 	// Move the DMA'd data into the transfer_data buffer and update the amount transferred.
 	uint32_t data_received = hw_xfer_size - hw_xfer_left;
+	USB_DEBUG(USB_DEBUG_XFER, "EP%u recvd %x|%x|%x", ep->n, data_received, hw_xfer_size,
+			doeptsiz);
 	if (data_received > 0) {
 		if (ep->xfer_dma_data != ep->transfer_data) {
 			// In buffered mode, we always receive into the start of the DMA buffer.
@@ -1935,6 +1950,11 @@ USB_DEBUG_PRINT_REGISTERS() {
 	USB_DEBUG_REG_VALUE(rDIEPTSIZ(1));
 	USB_DEBUG_REG_VALUE(rDIEPDMA(1));
 	USB_DEBUG_REG_VALUE(rDTXFSTS(1));
+
+	USB_DEBUG_REG_VALUE(rDOEPCTL(2));
+	USB_DEBUG_REG_VALUE(rDOEPINT(2));
+	USB_DEBUG_REG_VALUE(rDOEPTSIZ(2));
+	USB_DEBUG_REG_VALUE(rDOEPDMA(2));
 }
 
 #endif
