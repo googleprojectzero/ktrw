@@ -123,7 +123,7 @@ cache_invalidate(void *address, size_t size) {
 	for (uint64_t addr = start; addr < end; addr += cache_line_size) {
 		asm volatile("dc ivac, %0" : : "r"(addr));
 	}
-	dmb(sy);
+	dsb(sy);
 }
 
 void
@@ -134,7 +134,7 @@ cache_clean_and_invalidate(void *address, size_t size) {
 	for (uint64_t addr = start; addr < end; addr += cache_line_size) {
 		asm volatile("dc civac, %0" : : "r"(addr));
 	}
-	dmb(sy);
+	dsb(sy);
 }
 
 // ---- Memory mapping via TTBR0_EL1 --------------------------------------------------------------
