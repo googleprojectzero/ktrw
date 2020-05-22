@@ -995,7 +995,6 @@ gdb_pkt__qSupported(struct packet *pkt) {
 	char buffer[GDB_RSP_MAX_PACKET_SIZE];
 	struct packet reply = PACKET_WITH_DATA(buffer, sizeof(buffer));
 	pkt_w_sprintf(&reply, "PacketSize=%x;", GDB_RSP_MAX_PACKET_SIZE);
-	pkt_w_sprintf(&reply, "QNonStop+;");
 	pkt_w_sprintf(&reply, "hwbreak+;");
 	pkt_w_sprintf(&reply, "qXfer:features:read+;");
 	pkt_w_chop(&reply, 1);
