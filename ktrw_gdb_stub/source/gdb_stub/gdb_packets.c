@@ -948,6 +948,39 @@ gdb_pkt__qfThreadInfo(struct packet *pkt) {
 	return send_packet(&reply);
 }
 
+// ---- qRcmd packet ------------------------------------------------------------------------------
+
+static const struct dispatch qRcmd_dispatch[] = {
+};
+
+static sends_a_packet
+gdb_pkt__qRcmd_unknown() {
+	char buffer[GDB_RSP_MAX_PACKET_SIZE];
+	struct packet reply = PACKET_WITH_DATA(buffer, sizeof(buffer));
+	const char *message = "Unknown command";
+	pkt_put_hex_data(&reply, message, strlen(message));
+	return send_packet(&reply);
+}
+
+static sends_a_packet
+gdb_pkt__qRcmd(struct packet *pkt) {
+	// The actual command to execute is the hex-encoded tail: qRcmd,<hex-encoded-command>.
+	// We don't need the original packet on failure, so we can just hex-decode to the start of
+	// the packet itself.
+	size_t size;
+	bool ok = pkt_read_hex_data(pkt, pkt->data, &size, pkt->size)
+		&& pkt_empty(pkt);
+	if (!ok) {
+		return send_error_bad_packet("qRcmd");
+	}
+	// Set the new packet size and cursor.
+	pkt->size = size;
+	pkt_reset(pkt, pkt->data);
+	// Dispatch.
+	return pkt_dispatch(qRcmd_dispatch, DISPATCH_COUNT(qRcmd_dispatch),
+			pkt, gdb_pkt__qRcmd_unknown);
+}
+
 // ---- qsThreadInfo packet -----------------------------------------------------------------------
 
 static sends_a_packet
@@ -1151,6 +1184,7 @@ gdb_pkt__qWatchpointSupportInfo(struct packet *pkt) {
 static const struct dispatch q_dispatch[] = {
 	{ "C", '$', gdb_pkt__qC },
 	{ "fThreadInfo", '$', gdb_pkt__qfThreadInfo },
+	{ "Rcmd", ',', gdb_pkt__qRcmd },
 	{ "sThreadInfo", '$', gdb_pkt__qsThreadInfo },
 	{ "Supported", 0, gdb_pkt__qSupported },
 	{ "Xfer:features:read:target.xml", ':', gdb_pkt__qXfer_features_read_target_xml },
