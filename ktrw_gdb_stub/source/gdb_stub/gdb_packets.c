@@ -58,8 +58,8 @@ cpu_for_thread(int thread_id) {
 // expression from a void function will be an error with -Wpedantic.
 typedef struct sends_a_packet {} sends_a_packet;
 #define PACKET_SENT		((struct sends_a_packet){})
-#define PACKET_DEFERRED		((struct sends_a_packet){})
 #define PACKET_NOTIFICATION	((struct sends_a_packet){})
+#define PACKET_DEFERRED		((struct sends_a_packet){})
 
 // Send a packet containing the specified data.
 static sends_a_packet
@@ -69,9 +69,10 @@ send_packet_data(const void *data, size_t size) {
 }
 
 // Send a notification containing the specified data.
-static void
+static sends_a_packet
 send_notification_data(const void *data, size_t size) {
 	gdb_rsp_send_notification(data, size);
+	return PACKET_NOTIFICATION;
 }
 
 // Send an empty packet.
@@ -109,9 +110,9 @@ send_packet(struct packet *pkt) {
 }
 
 // Sends a GDB notification constructed using the pkt_* API.
-static void
+static sends_a_packet
 send_notification(struct packet *pkt) {
-	send_notification_data(pkt->data, pkt->p - pkt->data);
+	return send_notification_data(pkt->data, pkt->p - pkt->data);
 }
 
 // Saves the current packet cursor.
@@ -522,9 +523,9 @@ send_T_stop_reply_packet(int cpu_id, bool packet) {
 	build_T_stop_reply(&reply, cpu_id);
 	if (packet) {
 		return send_packet(&reply);
+	} else {
+		return send_notification(&reply);
 	}
-	send_notification(&reply);
-	return PACKET_NOTIFICATION;
 }
 
 // Send a stop reply packet in all-stop mode.
