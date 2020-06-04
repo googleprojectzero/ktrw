@@ -17,10 +17,8 @@
 // limitations under the License.
 //
 
-
 #include "gdb_stub/gdb_stub.h"
 
-#include "third_party/boot_args.h"
 #include "debug.h"
 #include "devicetree.h"
 #include "jit_heap.h"
@@ -28,6 +26,9 @@
 #include "page_table.h"
 #include "usb/usb.h"
 #include "watchdog.h"
+
+#include "third_party/boot_args.h"
+#include "third_party/kmod.h"
 
 // ---- Kernel symbols ----------------------------------------------------------------------------
 
@@ -1287,8 +1288,10 @@ gdb_stub_thread(void *parameter, int wait_result) {
 
 // ---- Entry -------------------------------------------------------------------------------------
 
-uint32_t
-_kext_start(uint64_t value) {
+KMOD_DECL(ktrw, KTRW_VERSION)
+
+static int
+ktrw_module_start(struct kmod_info *kmod, void *data) {
 	thread_t thread;
 	int kr = kernel_thread_start(gdb_stub_thread, NULL, &thread);
 	if (kr != 0) {
@@ -1296,4 +1299,10 @@ _kext_start(uint64_t value) {
 	}
 	thread_deallocate(thread);
 	return 0;
+}
+
+static int
+ktrw_module_stop(struct kmod_info *kmod, void *data) {
+	// No stopping KTRW.
+	return 1;
 }

@@ -5,6 +5,7 @@ APP_KEXT_DIR = ../$(APP_DIR)/kexts
 
 ARCH = arm64
 SDK  = iphoneos
+KTRW_VERSION = 0.1.0
 
 SYSROOT := $(shell xcrun --sdk $(SDK) --show-sdk-path)
 ifeq ($(SYSROOT),)
@@ -18,6 +19,8 @@ CFLAGS += -Isource
 CFLAGS += -O2
 CFLAGS += -Wall -Werror -Wpedantic -Wno-gnu -Wno-language-extension-token
 # TODO: -Wconversion
+
+DEFINES = -DKTRW_VERSION='"$(KTRW_VERSION)"'
 
 LDFLAGS  = -Xlinker -kext -nostdlib -Xlinker -fatal_warnings
 
