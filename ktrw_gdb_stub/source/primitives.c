@@ -83,8 +83,8 @@ strlen(const char *str) {
 int
 strcmp(const char *s1, const char *s2) {
 	for (;;) {
-		char c1 = *s1;
-		char c2 = *s2;
+		unsigned char c1 = (unsigned char) *s1;
+		unsigned char c2 = (unsigned char) *s2;
 		int diff = c1 - c2;
 		if (diff != 0) {
 			return diff;
@@ -100,8 +100,8 @@ strcmp(const char *s1, const char *s2) {
 int
 strncmp(const char *s1, const char *s2, size_t n) {
 	while (n > 0) {
-		char c1 = *s1;
-		char c2 = *s2;
+		unsigned char c1 = (unsigned char) *s1;
+		unsigned char c2 = (unsigned char) *s2;
 		int diff = c1 - c2;
 		if (diff != 0) {
 			return diff;
