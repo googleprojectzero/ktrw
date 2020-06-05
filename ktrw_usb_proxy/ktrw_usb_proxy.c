@@ -65,7 +65,7 @@ typedef struct _ktrw_usb_device *ktrw_usb_device;
 #define KTRW_USB_NULL	((ktrw_usb_device) NULL)
 
 // The maximum number of tries to open.
-#define MAX_TRIES	5
+#define KTRW_USB_OPEN_MAX_TRIES	5
 
 // Open the KTRW USB device.
 static ktrw_usb_device
@@ -96,7 +96,7 @@ ktrw_usb_open(io_service_t service, mach_port_t notification_port_set) {
 		if (result == kIOReturnSuccess) {
 			break;
 		}
-		if (try >= MAX_TRIES) {
+		if (try >= KTRW_USB_OPEN_MAX_TRIES) {
 			printf("Error: Could not open IOUSBDeviceInterface for KTRW USB device: 0x%x: %s\n",
 					result, mach_error_string(result));
 			goto fail_1;
@@ -124,7 +124,7 @@ ktrw_usb_open(io_service_t service, mach_port_t notification_port_set) {
 		if (interface_service != IO_OBJECT_NULL) {
 			break;
 		}
-		if (try >= MAX_TRIES) {
+		if (try >= KTRW_USB_OPEN_MAX_TRIES) {
 			printf("Error: No interfaces found for KTRW USB device\n");
 			goto fail_2;
 		}
@@ -222,7 +222,7 @@ ktrw_usb_matches_service(ktrw_usb_device ktrw, io_service_t service) {
 	return (ktrw != KTRW_USB_NULL && ktrw->service == service);
 }
 
-// Send data to KTRW.
+// Send data synchronously to KTRW.
 static ssize_t
 ktrw_usb_send(ktrw_usb_device ktrw, const void *data, size_t size) {
 	assert(size <= 0x1000);
@@ -260,7 +260,7 @@ ktrw_usb_recv_done(void *refCon, IOReturn result, void *arg0) {
 	callback(context, read_count);
 }
 
-// Receive data from KTRW.
+// Asynchronously receive data from KTRW.
 static void
 ktrw_usb_recv(ktrw_usb_device ktrw, void *data, size_t size,
 		void (*callback)(void *context, ssize_t size), void *context) {
@@ -303,10 +303,14 @@ struct ktrw_connection_state {
 	ktrw_usb_device ktrw;
 	int socket;
 	mach_port_t port_set;
+	// We need this read buffer here because reading from KTRW is asynchronous. Writing to KTRW
+	// is synchronous, so we don't need the corresponding write buffer.
 	uint8_t ktrw_read_buffer[0x1000];
 };
 
-// Handle input from KTRW.
+// Handle input from KTRW and queue another request to receive input. This function is indirectly
+// called by handle_notification_message()/IODispatchCalloutFromMessage(), which processes the
+// completion notification for the read request.
 static void
 handle_ktrw_input(void *context, ssize_t read_count) {
 	struct ktrw_connection_state *state = context;
@@ -426,7 +430,7 @@ fail_0:
 	return;
 }
 
-// Handle input on the socket. Socket input is forwarded directly over USB to KTRW.
+// Handle input on the socket synchronously. Socket input is forwarded directly over USB to KTRW.
 static void
 handle_socket_input(struct ktrw_connection_state *state, intptr_t input_size) {
 	size_t left = input_size;
@@ -439,23 +443,21 @@ handle_socket_input(struct ktrw_connection_state *state, intptr_t input_size) {
 			capacity = left;
 		}
 		ssize_t read_count = read(state->socket, buffer, capacity);
-		// Process the input data.
-		if (read_count > 0) {
-			log_data(buffer, sizeof(buffer), read_count,
-					(state->ktrw != KTRW_USB_NULL ? 2 : 3));
-			// We've consumed read_count bytes.
-			left -= read_count;
-			// Send the data to KTRW.
-			if (state->ktrw != KTRW_USB_NULL) {
-				ssize_t sent = ktrw_usb_send(state->ktrw, buffer, read_count);
-				if (sent < read_count) {
-					printf("Error: Could not send data to KTRW\n");
-				}
-			}
-		}
 		// If we failed to read anything, stop processing.
 		if (read_count <= 0) {
 			break;
+		}
+		// Process the input data.
+		log_data(buffer, sizeof(buffer), read_count,
+				(state->ktrw != KTRW_USB_NULL ? 2 : 3));
+		// We've consumed read_count bytes.
+		left -= read_count;
+		// Send the data to KTRW.
+		if (state->ktrw != KTRW_USB_NULL) {
+			ssize_t sent = ktrw_usb_send(state->ktrw, buffer, read_count);
+			if (sent < read_count) {
+				printf("Error: Could not send data to KTRW\n");
+			}
 		}
 	}
 }
@@ -476,10 +478,9 @@ handle_notification_message(struct ktrw_connection_state *state) {
 				0,
 				MACH_PORT_NULL);
 		if (kr != KERN_SUCCESS) {
-			if (kr == MACH_RCV_TIMED_OUT) {
-				break;
+			if (kr != MACH_RCV_TIMED_OUT) {
+				printf("Error: Could not receive Mach message\n");
 			}
-			printf("Error: Could not receive Mach message\n");
 			break;
 		}
 		IODispatchCalloutFromMessage(NULL, &msg.hdr, NULL);

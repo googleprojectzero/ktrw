@@ -8,7 +8,7 @@ ifneq ($(DEBUG),0)
 CFLAGS += -DDEBUG=$(DEBUG)
 endif
 
-SOURCES = main.c
+SOURCES = ktrw_usb_proxy.c
 
 HEADERS =
 
