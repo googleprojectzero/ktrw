@@ -1,10 +1,17 @@
 KTRW
 ===================================================================================================
 
-KTRW is an iOS kernel debugger for devices with an A11 SoC, such as the iPhone 8. It leverages
-debug registers present on these devices to bypass KTRR, remap the kernel as writable, and load a
-kernel extension that implements a GDB stub, allowing full-featured kernel debugging with LLDB or
-IDA Pro over a standard Lightning to USB cable.
+KTRW is an iOS kernel debugger for devices with an A11 SoC, such as the iPhone 8. It demonstrates
+how to use debug registers present on these devices to bypass KTRR, remap the kernel as writable,
+and load a kernel extension that implements a GDB stub, allowing full-featured kernel debugging
+with LLDB or IDA Pro over a standard Lightning to USB cable.
+
+With the release of the [checkra1n] jailbreak and [pongoOS] pre-boot environment, it is possible to
+load KTRW as a kernel extension directly into the iOS kernelcache, so the original KTRR bypass is
+no longer used.
+
+[checkra1n]: https://checkra.in
+[pongoOS]: https://github.com/checkra1n/pongoOS
 
 
 Bypassing KTRR
@@ -33,65 +40,78 @@ that the KTRR bypass is not persistent: it will be lost once the device sleeps.
 Using KTRW
 ---------------------------------------------------------------------------------------------------
 
-KTRW consists of three components: the `ktrw_gdb_stub.ikext` kernel extension, the `ktrw_usb_proxy`
-USB-to-TCP proxy utility, and the `ktrw_kext_loader` tool to load kernel extensions. Depending on
-how KTRW is being used, `ktrw_kext_loader` can be built as a command line tool or as an iOS app.
+KTRW consists of four components: the `pongo_kext_loader` utility, the `kextload.pongo-module`
+pongoOS module, the `ktrw_gdb_stub.ikext` kernel extension, and the `ktrw_usb_proxy` USB-to-TCP
+proxy utility. These can be built individually by ruunning `make` in each subdirectory or
+collectively by running `make` in the top-level directory.
 
-First, build the kernel extension:
+To use KTRW, we'll run three utilities: [checkra1n], `pongo_kext_loader`, and `ktrw_usb_proxy`.
 
-	$ cd ktrw_gdb_stub
-	$ make
+Checkra1n uses the checkm8 SecureROM exploit to establish a pre-boot environment called pongoOS
+capable of loading arbitrary code modules and patching the kernel. Running the following command
+causes checkra1n to listen for attached iOS devices in DFU mode and boot pongoOS:
 
-The compiled iOS kext will automatically be copied to the `ktrw_kext_loader/kexts/` directory.
+	$ /Applications/checkra1n.app/Contents/MacOS/checkra1n -c -p
 
-Next, build the USB-to-TCP proxy utility:
+By itself pongoOS does not provide the ability to insert XNU kernel extensions into the kernelcache
+on the device; in order to do this we use `pongo_kext_loader` and `kextload.pongo-module`. The
+`kextload` pongoOS module adds two new commands to the pongoOS shell: `kernelcache-symbols`, which
+allows uploading a symbol table to resolve kernel symbols, and `kextload`, which inserts an
+uploaded kernel extension into the kernelcache. The `pongo_kext_loader` utility glues everything
+together: it listens for attached pongoOS devices, loads `kextload.pongo-module`, inserts the
+`ktrw_gdb_stub.ikext` kernel extension into the iOS kernelcache, and boots XNU.
 
-	$ cd ktrw_usb_proxy
-	$ make
+Run the following command to have `pongo_kext_loader` load `ktrw_gdb_stub.ikext` on the iOS device
+at boot:
 
-`ktrw_usb_proxy` is needed to communicate with the kernel extension over USB and relay the data
-over TCP so that LLDB can connect. It will print the data being exchanged over the connection. Run
-`ktrw_usb_proxy` with the port number LLDB will connect to:
+	$ pongo_kext_loader/pongo_kext_loader \
+		pongo_kextload/kextload.pongo-module \
+		ktrw_gdb_stub/kernel_symbols \
+		ktrw_gdb_stub/ktrw_gdb_stub.ikext
 
-	$ ./ktrw_usb_proxy 39399
+The final utility that needs to run is `ktrw_usb_proxy`. `ktrw_usb_proxy` is needed to communicate
+with the kernel extension over USB and relay the data over TCP so that LLDB can connect to it. It
+will print the data being exchanged over the connection to stdout. Run `ktrw_usb_proxy` with the
+port number LLDB will connect to:
 
-Next, build `ktrw_kext_loader`. There are two modes of operation (depending on how the kernel task
-port is being exposed), and the build process depends on which is being used.
+	$ ktrw_usb_proxy/ktrw_usb_proxy 39399
 
-If KTRW is being run with [checkra1n], then build `ktrw_kext_loader` as a command-line tool and scp
-the necessary files to the device:
+Finally, connect an iOS device using a USB cable and enter DFU mode. First checkra1n will boot
+pongoOS, then `pongo_kext_loader` will insert the KTRW GDB stub kernel extension, and finally XNU
+will boot. The GDB stub will start running about 30 seconds after the kernel starts booting to give
+the system time to initialize.
 
-	$ cd ktrw_kext_loader
-	$ make
-	$ codesign -s '*' -f --entitlements ktrw_kext_loader.entitlements ktrw_kext_loader
-	$ scp ktrw_kext_loader iphone:
-	$ scp -r kernel_symbols iphone:
-	$ scp kexts/ktrw_gdb_stub.ikext iphone:
+Once the GDB stub runs, it will claim one CPU core for itself and halt the remaining cores. It will
+also hijack the Synopsys USB 2.0 OTG controller from the kernel so that it can communicate with the
+host. As a result, the host will not see the iPhone as an iOS device and the phone (once it has
+been resumed) will not be able to send data over USB as normal.
 
-Once all the necessary files are in place, ssh into the phone and run the kext loader:
+At this point, you are ready to debug the device.
 
-	$ ssh iphone
-	# ./ktrw_kext_loader ktrw_gdb_stub.ikext
-	[+] Platform: iPhone10,1 17B102
-	[+] task_for_pid(0) = 0x907
-	[!] Could not find the kernel base address
-	[!] Trying to find the kernel base address using an unsafe heap scan!
-	[+] KASLR slide is 0x178e4000
-	[+] Kext ktrw_gdb_stub.ikext loaded at address 0xffffffe0ca1a0000
+A few common issues:
 
-A separate process should be used if the kernel task port is exposed via host special port 4, for
-example after a kernel exploit. In this case, simply open the `ktw_kext_loader` project in Xcode
-and run the app on a connected A11 iPhone to load `ktrw_gdb_stub.ikext` into the kernel and start
-debugging.
+* If you're having trouble entering DFU mode using a USB C cable, try using a USB A cable instead.
+* If the device immediately panics when the GDB stub starts to run, the issue may be that the USB
+  hardware is not yet powered. This is likely to be the case if the device has a passcode and the
+  "USB Accessories" setting is disabled to prevent USB accessories from connecting when the device
+  is locked. Either disabling the passcode, allowing USB accessories, or unlocking the device
+  before the GDB stub starts should solve the issue.
+* Similarly, do not unplug the device while KTRW is running, as this powers down the USB hardware.
+* If LLDB does not automatically detect that the target is an iOS kernelcache, it's possible that
+  the system halted while a CPU core was in userspace. Try continuing and re-interrupting the
+  target until all CPU cores are running in kernel mode, then reattach to the target.
+* Sometimes the screen becomes unresponsive right after connecting LLDB. I have been unable to
+  identify/fix the root cause of this issue, but it seems to help if you connect with LLDB as soon
+  as the GDB stub first halts the device, then immediately continue to minimize the amount of time
+  the system is stopped during this initial halt.
+* KTRW is incompatible with on-device debugging, e.g. using Xcode or debugserver to debug a process
+  on the device.
+* The pongoOS kernel extension loading module currently has several limitations: it will only work
+  on new-style kernelcaches and only one kernel extension can be inserted into the kernelcache.
 
-Once the kext has loaded (using either method), it will claim one CPU core for itself and halt the
-remaining cores. It will also hijack the Synopsys USB 2.0 OTG controller from the kernel so that it
-can communicate with the host. As a result, the host will not see the iPhone as an iOS device and
-the phone (once it has been resumed) will not be able to send data over USB as normal.
-
-After this, you are ready to debug the device.
-
-[checkra1n]: https://checkra.in
+The method described here has been tested as working on iOS 13.3. Prior versions of KTRW used a
+KTRR bypass to load kernel extensions rather than relying on checkra1n; `ktrw_kext_loader`
+implements this technique, and it should be used instead when debugging iOS 12.
 
 
 Debugging with LLDB
@@ -125,8 +145,7 @@ is reserved for the debugger itself, so it will not show up in the list.)
 	  thread #5: tid = 0x0006, 0xfffffff027ffda18 kernelcache.iPhone10,1.16C101`___lldb_unnamed_symbol1734$$kernelcache.iPhone10,1.16C101 + 272
 	(lldb)
 
-Because KTRR has been disabled in the MMU and the kernel has been remapped as read/write, it is
-possible to patch kernel memory:
+Because KTRR has been disabled, it is possible to patch kernel memory:
 
 	(lldb) x/12wx 0xfffffff027e04000
 	0xfffffff027e04000: 0xfeedfacf 0x0100000c 0x00000000 0x00000002
@@ -229,40 +248,31 @@ Debugging with IDA Pro
 ---------------------------------------------------------------------------------------------------
 
 It is possible to use IDA Pro 7.3 or later for iOS kernel debugging, but there are some notable
-limitations.
+limitations prior to IDA Pro 7.5.
 
-You will need to modify `dbg_xnu.cfg` to add support for the KTRW GDB stub's `target.xml` features.
-You can find the required changes in `misc/dbg_xnu.cfg.patch`. I also recommend setting up
-`KDK_PATH` to point to a directory containing copies of any kernelcaches you will be debugging to
-reduce the amount of memory IDA downloads off the device.
+On IDA Pro 7.3 and 7.4, you will need to modify `dbg_xnu.cfg` to add support for the KTRW GDB
+stub's `target.xml` features. You can find the required changes in `misc/dbg_xnu.cfg.patch`. I also
+recommend setting up `KDK_PATH` to point to a directory containing copies of any kernelcaches you
+will be debugging to reduce the amount of memory IDA downloads off the device. You will also need
+to be sure to always use hardware breakpoints rather than software breakpoints, which are currently
+unsupported.
+
+KTRW should work out of the box with IDA Pro 7.5.
 
 Open the kernelcache corresponding to the device in IDA Pro, select the remote XNU debugger, and
 connect to the port on which `ktrw_usb_proxy` is listening. You should see IDA rebase the
 kernelcache and start downloading data off the device. This may take a long time to complete.
 
-You will also need to be sure to always use hardware breakpoints, as software breakpoints are
-currently unsupported.
-
-
-Compatibility with Checkra1n
----------------------------------------------------------------------------------------------------
-
-I'm actively working on making KTRW compatible with [checkra1n]. At the moment, KTRW will only run
-on an iPhone 8 on iOS 13.2.2 compromised with checkra1n for a short time before panicking. iOS 12.4
-compromised with SockPuppet is the latest known stable version.
-
 
 Adding support for new platforms
 ---------------------------------------------------------------------------------------------------
 
-KTRW relies on certain parameters like kernel addresses and offsets in order to manipulate kernel
-data structures, call kernel functions, and link against kernel symbols. You can use jtool2 to find
-the addresses needed to add support for a new device and/or kernel version.
-
-Kernel extensions are linked against the symbols supplied in the `ktrw_kext_loader/kernel_symbols`
+Kernel extensions are linked against the symbols supplied in the `ktrw_gdb_stub/kernel_symbols`
 directory. The files in this directory are named `<hardware-version>_<build-version>.txt`, where
 `<hardware-version>` is the hardware identifier (e.g. iPhone10,1) and `<build-version>` is the
-iOS build version (e.g. 16C101).
+iOS build version (e.g. 16C101). There must be a single file per kernelcache UUID, so more
+hardware/build version pairs may be supported than what is implied by the file name. Each file
+should declare all supported hardware/build pairs in the header.
 
 
 Breakpoints and watchpoints

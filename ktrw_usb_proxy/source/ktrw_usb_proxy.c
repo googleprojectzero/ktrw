@@ -376,6 +376,8 @@ ktrw_device_removed(void *refCon, io_iterator_t iterator) {
 			printf("Closing KTRW device\n");
 			ktrw_usb_close(state->ktrw);
 			state->ktrw = KTRW_USB_NULL;
+			close(state->socket);
+			state->socket = -1;
 		}
 		IOObjectRelease(service);
 	}

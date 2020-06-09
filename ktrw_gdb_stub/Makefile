@@ -1,8 +1,5 @@
 TARGET = ktrw_gdb_stub.ikext
 
-APP_DIR = ktrw_kext_loader
-APP_KEXT_DIR = ../$(APP_DIR)/kexts
-
 ARCH = arm64
 SDK  = iphoneos
 KTRW_VERSION = 0.1.0
@@ -60,8 +57,6 @@ HEADERS = source/gdb_stub/gdb_cpu.h \
 
 $(TARGET): $(SOURCES) $(HEADERS)
 	$(CC) $(CFLAGS) $(DEFINES) $(LDFLAGS) -o $@ $(SOURCES)
-	mkdir -p $(APP_KEXT_DIR)
-	cp $(TARGET) $(APP_KEXT_DIR)/$(TARGET)
 
 symbols: $(TARGET)
 	@nm -u $(TARGET)

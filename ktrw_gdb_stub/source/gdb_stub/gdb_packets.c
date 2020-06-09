@@ -949,9 +949,42 @@ gdb_pkt__qfThreadInfo(struct packet *pkt) {
 	return send_packet(&reply);
 }
 
+// ---- qRcmd coresight-ed packet -----------------------------------------------------------------
+
+static sends_a_packet
+gdb_pkt__qRcmd_coresight_ed(struct packet *pkt) {
+	// coresight-ed:<cpu-id>,<offset>
+	uint64_t cpu_id_big;
+	uint64_t offset;
+	bool ok = pkt_r_hex_u64(pkt, &cpu_id_big)
+		&& pkt_r_match(pkt, ",")
+		&& pkt_r_hex_u64(pkt, &offset)
+		&& pkt_r_empty(pkt);
+	int cpu_id = (int) cpu_id_big;
+	if (!ok || cpu_id != cpu_id_big || !valid_cpu_id(cpu_id)
+			|| (offset % 4) != 0 || offset >= 0x1000) {
+		return send_error_bad_packet("qRcmd:coresight-ed");
+	}
+	// Read the value of the external debug register. This is a layering violation, so we
+	// declare the external_debug_registers array directly rather than include the header.
+	// This read may trigger unanticipated behavior, so it should only be used for debugging.
+	extern uint64_t external_debug_registers[];
+	uint32_t value = *(volatile uint32_t *)(external_debug_registers[cpu_id] + offset);
+	// Build the reply.
+	char hex_value[8 + 1];
+	char *p = hex_value;
+	snprintf_cat(hex_value, sizeof(hex_value), &p, "%08x", value);
+	*p = 0;
+	char buffer[GDB_RSP_MAX_PACKET_SIZE];
+	struct packet reply = PACKET_WITH_DATA(buffer, sizeof(buffer));
+	pkt_w_hex_data(&reply, hex_value, strlen(hex_value));
+	return send_packet(&reply);
+}
+
 // ---- qRcmd packet ------------------------------------------------------------------------------
 
 static const struct dispatch qRcmd_dispatch[] = {
+	{ "coresight-ed", ':', gdb_pkt__qRcmd_coresight_ed },
 };
 
 static sends_a_packet

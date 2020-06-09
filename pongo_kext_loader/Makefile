@@ -1,4 +1,4 @@
-TARGET = ktrw_usb_proxy
+TARGET = pongo_kext_loader
 
 DEBUG ?= 0
 
@@ -8,7 +8,7 @@ ifneq ($(DEBUG),0)
 CFLAGS += -DDEBUG=$(DEBUG)
 endif
 
-SOURCES = source/ktrw_usb_proxy.c
+SOURCES = source/pongo_kext_loader.c
 
 HEADERS =
 
