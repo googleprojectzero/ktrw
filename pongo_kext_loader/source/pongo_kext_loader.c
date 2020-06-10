@@ -690,8 +690,21 @@ kernelcache_symbol_table_generate() {
 		if (dp == NULL) {
 			break;
 		}
+		// Only process regular files.
+		if (dp->d_type != DT_REG) {
+			goto next_0;
+		}
 		// Skip hidden entries.
 		if (dp->d_name[0] == '.') {
+			goto next_0;
+		}
+		// Require file extension ".txt".
+		const char *extension = ".txt";
+		if (dp->d_namlen <= strlen(extension)) {
+			goto next_0;
+		}
+		const char *file_ext = dp->d_name + dp->d_namlen - strlen(extension);
+		if (strcmp(file_ext, extension) != 0) {
 			goto next_0;
 		}
 		// Generate the full path.
@@ -743,7 +756,7 @@ kernelcache_uuid_already_exists:
 			uint64_t address;
 			ok = parse_kernelcache_symbols_symbol(&tp, &symbol, &length, &address);
 			if (!ok) {
-				ERROR("Invalid kernelcache symbols file\"%s\"", path);
+				ERROR("Invalid kernelcache symbols file \"%s\"", path);
 				break;
 			}
 			// If we didn't get a symbol, then this is the end.
