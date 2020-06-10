@@ -54,40 +54,7 @@ cpu_for_thread(int thread_id) {
 	return cpu_id;
 }
 
-// A type hack to allow return statements in packet sending functions. Otherwise, returning a void
-// expression from a void function will be an error with -Wpedantic.
-typedef struct sends_a_packet {} sends_a_packet;
-#define PACKET_SENT		((struct sends_a_packet){})
-#define PACKET_NOTIFICATION	((struct sends_a_packet){})
-#define PACKET_DEFERRED		((struct sends_a_packet){})
-
-// Send a packet containing the specified data.
-static sends_a_packet
-send_packet_data(const void *data, size_t size) {
-	gdb_rsp_send_packet(data, size);
-	return PACKET_SENT;
-}
-
-// Send a notification containing the specified data.
-static sends_a_packet
-send_notification_data(const void *data, size_t size) {
-	gdb_rsp_send_notification(data, size);
-	return PACKET_NOTIFICATION;
-}
-
-// Send an empty packet.
-static sends_a_packet
-send_empty_packet() {
-	return send_packet_data(NULL, 0);
-}
-
-// Send a packet containing the specified string.
-static sends_a_packet
-send_string_packet(const char *str) {
-	return send_packet_data(str, strlen(str));
-}
-
-// ---- Packet parsing functions ------------------------------------------------------------------
+// ---- Packet parsing and building ---------------------------------------------------------------
 
 // State for input packet processing.
 struct packet {
@@ -99,22 +66,6 @@ struct packet {
 // Initialize a packet with a data buffer.
 #define PACKET_WITH_DATA(_buffer, _size)	{ .data = _buffer, .size = _size, .p = _buffer }
 
-// Sends a GDB packet constructed using the pkt_* API.
-static sends_a_packet
-send_packet(struct packet *pkt) {
-	size_t size = pkt->p - pkt->data;
-	if (size > pkt->size) {
-		size = pkt->size;
-	}
-	return send_packet_data(pkt->data, size);
-}
-
-// Sends a GDB notification constructed using the pkt_* API.
-static sends_a_packet
-send_notification(struct packet *pkt) {
-	return send_notification_data(pkt->data, pkt->p - pkt->data);
-}
-
 // Saves the current packet cursor.
 static char *
 pkt_save(struct packet *pkt) {
@@ -125,6 +76,16 @@ pkt_save(struct packet *pkt) {
 static void
 pkt_reset(struct packet *pkt, char *p) {
 	pkt->p = p;
+}
+
+// Returns the true size of the data in the packet.
+static size_t
+pkt_data_size(struct packet *pkt) {
+	size_t size = pkt->p - pkt->data;
+	if (size > pkt->size) {
+		size = pkt->size;
+	}
+	return size;
 }
 
 // Returns true if all the data has been read from the packet.
@@ -196,7 +157,8 @@ done:
 	return true;
 }
 
-// Read the raw binary data of the packet.
+// Read the raw binary data of the packet, returning a pointer to the internal storage. After this
+// operation, the packet is empty.
 static bool
 pkt_r_data(struct packet *pkt, const void **data, size_t *size) {
 	char *end = pkt->data + pkt->size;
@@ -317,6 +279,98 @@ pkt_w_chop(struct packet *pkt, size_t size) {
 	pkt->p -= size;
 }
 
+// Prepare the packet for hex encoding via pkt_w_encode_hex(). Returns a hex_size value that must
+// be passed to pkt_w_encode_hex().
+static size_t
+pkt_w_encode_hex_prepare(struct packet *pkt) {
+	// Since we'll be hex encoding the data, we actaully have only half of the available
+	// capacity usable for storing raw data. And we need to be sure to round down on the
+	// available raw capacity if the available hex capacity is odd. We can use the tail end of
+	// the buffer for the raw data, then encode from that point into the original cursor
+	// position in pkt_w_encode_hex().
+	//
+	// +----------------------+----------+---------+
+	// |========= 22 =========|    10    :    9    |
+	// +----------------------+----------+---------+
+	// ^                      ^          ^         ^
+	// data                   orig_p     raw_p     data+size
+	if (pkt->p >= pkt->data + pkt->size) {
+		return 0;
+	}
+	size_t available_hex = (pkt->data + pkt->size) - pkt->p;
+	size_t available_raw = available_hex / 2;
+	pkt->p = (pkt->data + pkt->size) - available_raw;
+	return available_hex;
+}
+
+// Hex-encode the data written to the packet after the call to pkt_w_encode_hex_prepare(). The
+// hex_size parameter must be the value originally returned by pkt_w_encode_hex_prepare().
+static void
+pkt_w_encode_hex(struct packet *pkt, size_t hex_size) {
+	if (hex_size == 0) {
+		return;
+	}
+	size_t available_hex = hex_size;
+	size_t available_raw = available_hex / 2;
+	char *raw_p = (pkt->data + pkt->size) - available_raw;
+	size_t raw_size = pkt->p - raw_p;
+	// Because we placed the raw data in the second half of the (available) buffer, we can be
+	// sure that hex encoding into the start will not overwrite the raw data itself. Thus we
+	// just restore the original cursor and call pkt_w_hex_data() with the raw data.
+	pkt->p = (pkt->data + pkt->size) - available_hex;
+	pkt_w_hex_data(pkt, raw_p, raw_size);
+}
+
+// ---- Sending packets ---------------------------------------------------------------------------
+
+// A type hack to allow return statements in packet sending functions. Otherwise, returning a void
+// expression from a void function will be an error with -Wpedantic.
+typedef struct sends_a_packet {} sends_a_packet;
+#define PACKET_SENT		((struct sends_a_packet){})
+#define PACKET_NOTIFICATION	((struct sends_a_packet){})
+#define PACKET_DEFERRED		((struct sends_a_packet){})
+
+// Send a packet containing the specified data.
+static sends_a_packet
+send_packet_data(const void *data, size_t size) {
+	gdb_rsp_send_packet(data, size);
+	return PACKET_SENT;
+}
+
+// Send a notification containing the specified data.
+static sends_a_packet
+send_notification_data(const void *data, size_t size) {
+	gdb_rsp_send_notification(data, size);
+	return PACKET_NOTIFICATION;
+}
+
+// Sends a GDB packet constructed using the pkt_* API.
+static sends_a_packet
+send_packet(struct packet *pkt) {
+	size_t size = pkt_data_size(pkt);
+	return send_packet_data(pkt->data, size);
+}
+
+// Sends a GDB notification constructed using the pkt_* API.
+static sends_a_packet
+send_notification(struct packet *pkt) {
+	size_t size = pkt_data_size(pkt);
+	return send_notification_data(pkt->data, size);
+}
+
+
+// Send an empty packet.
+static sends_a_packet
+send_empty_packet() {
+	return send_packet_data(NULL, 0);
+}
+
+// Send a packet containing the specified string.
+static sends_a_packet
+send_string_packet(const char *str) {
+	return send_packet_data(str, strlen(str));
+}
+
 // ---- Packet dispatching by name ----------------------------------------------------------------
 
 // A struct to link a specific packet name and separator with the appropriate packet handler to
@@ -374,20 +428,14 @@ send_error_packet(int error, const char *message, ...) {
 	struct packet reply = PACKET_WITH_DATA(buffer, sizeof(buffer));
 	pkt_w_sprintf(&reply, "E%02x", (error & 0xff));
 	if (gdb.error_strings && message != NULL) {
-		// Build the message in a separate buffer.
-		char message_buffer[256];
-		char *ptr = message_buffer;
+		// Write ";" followed by the hex-encoded error message.
+		pkt_w_sprintf(&reply, ";");
+		size_t hex_size = pkt_w_encode_hex_prepare(&reply);
 		va_list ap;
 		va_start(ap, message);
-		vsnprintf_cat(message_buffer, sizeof(message_buffer), &ptr, message, ap);
+		pkt_w_vsprintf(&reply, message, ap);
 		va_end(ap);
-		size_t length = ptr - message_buffer;
-		if (length > sizeof(message_buffer)) {
-			length = sizeof(message_buffer);
-		}
-		// Hex-encode the error string into the error reply.
-		pkt_w_sprintf(&reply, ";");
-		pkt_w_hex_data(&reply, message_buffer, length);
+		pkt_w_encode_hex(&reply, hex_size);
 	}
 	return send_packet(&reply);
 }
@@ -583,11 +631,13 @@ non_stop__send_stop_reply_packet(bool packet) {
 			return non_stop__send_stop_reply_packet_for_cpu(cpu_id, packet);
 		}
 	}
-	// All CPUs are running or we are done with the sequence.
+	// All CPUs are running or we are done with the sequence. If we're sending packets, we need
+	// to send "OK" to end the sequence.
 	if (packet) {
 		return send_ok();
 	}
-	// For notifications, we don't have an actual packet.
+	// Otherwise, for notifications, we don't have an actual packet.
+	// TODO: Does this actually happen?
 	return PACKET_NOTIFICATION;
 }
 
@@ -868,7 +918,7 @@ gdb_pkt__p(struct packet *pkt) {
 	if (!ok) {
 		return send_error_bad_packet("p");
 	}
-	if ((int)reg_id != reg_id || reg_id > gdb_register_count) {
+	if ((reg_id_t) reg_id != reg_id || reg_id > gdb_register_count) {
 		return send_error_invalid_register("p");
 	}
 	if (!cpu_is_halted(gdb.current_cpu)) {
@@ -901,7 +951,7 @@ gdb_pkt__P(struct packet *pkt) {
 	if (!ok) {
 		return send_error_bad_packet("P");
 	}
-	if ((int)reg_id != reg_id || reg_id > gdb_register_count) {
+	if ((reg_id_t) reg_id != reg_id || reg_id > gdb_register_count) {
 		return send_error_invalid_register("P");
 	}
 	const struct gdb_register_info *reg = &gdb_register_info[reg_id];
@@ -971,13 +1021,11 @@ gdb_pkt__qRcmd_coresight_ed(struct packet *pkt) {
 	extern uint64_t external_debug_registers[];
 	uint32_t value = *(volatile uint32_t *)(external_debug_registers[cpu_id] + offset);
 	// Build the reply.
-	char hex_value[8 + 1];
-	char *p = hex_value;
-	snprintf_cat(hex_value, sizeof(hex_value), &p, "%08x", value);
-	*p = 0;
 	char buffer[GDB_RSP_MAX_PACKET_SIZE];
 	struct packet reply = PACKET_WITH_DATA(buffer, sizeof(buffer));
-	pkt_w_hex_data(&reply, hex_value, strlen(hex_value));
+	size_t hex_size = pkt_w_encode_hex_prepare(&reply);
+	pkt_w_sprintf(&reply, "%08x", value);
+	pkt_w_encode_hex(&reply, hex_size);
 	return send_packet(&reply);
 }
 
