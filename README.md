@@ -79,7 +79,8 @@ port number LLDB will connect to:
 Finally, connect an iOS device using a USB cable and enter DFU mode. First checkra1n will boot
 pongoOS, then `pongo_kext_loader` will insert the KTRW GDB stub kernel extension, and finally XNU
 will boot. The GDB stub will start running about 30 seconds after the kernel starts booting to give
-the system time to initialize.
+the system time to initialize. (This delay can be configured during build using the
+`ACTIVATION_DELAY` make variable.)
 
 Once the GDB stub runs, it will claim one CPU core for itself and halt the remaining cores. It will
 also hijack the Synopsys USB 2.0 OTG controller from the kernel so that it can communicate with the
@@ -95,7 +96,8 @@ A few common issues:
   hardware is not yet powered. This is likely to be the case if the device has a passcode and the
   "USB Accessories" setting is disabled to prevent USB accessories from connecting when the device
   is locked. Either disabling the passcode, allowing USB accessories, or unlocking the device
-  before the GDB stub starts should solve the issue.
+  before the GDB stub starts should solve the issue. Try changing `ACTIVATION_DELAY` if you need
+  more time to unlock the device.
 * Similarly, do not unplug the device while KTRW is running, as this powers down the USB hardware.
 * If LLDB does not automatically detect that the target is an iOS kernelcache, it's possible that
   the system halted while a CPU core was in userspace. Try continuing and re-interrupting the

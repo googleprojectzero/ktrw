@@ -1236,8 +1236,11 @@ check_cpus() {
 // A thread function wrapper around gdb_stub_main().
 static void
 gdb_stub_thread(void *parameter, int wait_result) {
-	// Sleep for 30 seconds to allow the system to start up.
-	IOSleep(30 * 1000);
+	// Sleep for a few seconds (the exact amount is configured during build, but defaults to 30
+	// seconds) to allow the system to start up.
+	if (KTRW_GDB_STUB_ACTIVATION_DELAY > 0) {
+		IOSleep(KTRW_GDB_STUB_ACTIVATION_DELAY * 1000);
+	}
 	// Parse the device tree for basic system configuration.
 	bool ok = parse_devicetree_info();
 	if (!ok) {
