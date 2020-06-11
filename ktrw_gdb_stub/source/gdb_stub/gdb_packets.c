@@ -323,12 +323,17 @@ pkt_w_encode_hex(struct packet *pkt, size_t hex_size) {
 
 // ---- Sending packets ---------------------------------------------------------------------------
 
-// A type hack to allow return statements in packet sending functions. Otherwise, returning a void
-// expression from a void function will be an error with -Wpedantic.
-typedef struct sends_a_packet {} sends_a_packet;
+// A type hack to force all paths of the packet parsing logic to send exactly one packet or to
+// explicitly declare when exceptional packet handling (e.g. deferred packets) is taking place.
+typedef struct sends_a_packet {} __attribute__((warn_unused_result)) sends_a_packet;
 #define PACKET_SENT		((struct sends_a_packet){})
 #define PACKET_NOTIFICATION	((struct sends_a_packet){})
 #define PACKET_DEFERRED		((struct sends_a_packet){})
+
+// Consume a sends_a_packet result without generating a warning.
+static void
+send_a_packet(sends_a_packet packet) {
+}
 
 // Send a packet containing the specified data.
 static sends_a_packet
@@ -369,6 +374,14 @@ send_empty_packet() {
 static sends_a_packet
 send_string_packet(const char *str) {
 	return send_packet_data(str, strlen(str));
+}
+
+// Re-initialize a packet for use as a reply buffer. The original packet must have had a buffer of
+// size GDB_RSP_MAX_PACKET_SIZE.
+static void
+make_reply_packet(struct packet *pkt) {
+	pkt->size = GDB_RSP_MAX_PACKET_SIZE;
+	pkt_reset(pkt, pkt->data);
 }
 
 // ---- Packet dispatching by name ----------------------------------------------------------------
@@ -423,21 +436,20 @@ send_ok() {
 
 // Send an error packet "Exx". Don't use this function directly.
 static sends_a_packet
-send_error_packet(int error, const char *message, ...) {
-	char buffer[GDB_RSP_MAX_PACKET_SIZE];
-	struct packet reply = PACKET_WITH_DATA(buffer, sizeof(buffer));
-	pkt_w_sprintf(&reply, "E%02x", (error & 0xff));
+send_error_packet(struct packet *pkt, int error, const char *message, ...) {
+	make_reply_packet(pkt);
+	pkt_w_sprintf(pkt, "E%02x", (error & 0xff));
 	if (gdb.error_strings && message != NULL) {
 		// Write ";" followed by the hex-encoded error message.
-		pkt_w_sprintf(&reply, ";");
-		size_t hex_size = pkt_w_encode_hex_prepare(&reply);
+		pkt_w_sprintf(pkt, ";");
+		size_t hex_size = pkt_w_encode_hex_prepare(pkt);
 		va_list ap;
 		va_start(ap, message);
-		pkt_w_vsprintf(&reply, message, ap);
+		pkt_w_vsprintf(pkt, message, ap);
 		va_end(ap);
-		pkt_w_encode_hex(&reply, hex_size);
+		pkt_w_encode_hex(pkt, hex_size);
 	}
-	return send_packet(&reply);
+	return send_packet(pkt);
 }
 
 // Error types. Use the functions below.
@@ -454,54 +466,54 @@ enum {
 };
 
 static sends_a_packet
-send_error_bad_packet(const char *name) {
-	return send_error_packet(ERROR_BAD_PACKET, "%s packet: Bad packet", name);
+send_error_bad_packet(struct packet *pkt, const char *name) {
+	return send_error_packet(pkt, ERROR_BAD_PACKET, "%s packet: Bad packet", name);
 }
 
 static sends_a_packet
-send_error_no_thread_selected(const char *name) {
-	return send_error_packet(ERROR_NO_THREAD, "%s packet: No thread selected", name);
+send_error_no_thread_selected(struct packet *pkt, const char *name) {
+	return send_error_packet(pkt, ERROR_NO_THREAD, "%s packet: No thread selected", name);
 }
 
 static sends_a_packet
-send_error_invalid_address(const char *name, uint64_t address) {
-	return send_error_packet(ERROR_INVALID_ADDRESS,
+send_error_invalid_address(struct packet *pkt, const char *name, uint64_t address) {
+	return send_error_packet(pkt, ERROR_INVALID_ADDRESS,
 			"%s packet: Invalid address 0x%016llx", name, address);
 }
 
 static sends_a_packet
-send_error_invalid_length(const char *name) {
-	return send_error_packet(ERROR_INVALID_LENGTH, "%s packet: Invalid length", name);
+send_error_invalid_length(struct packet *pkt, const char *name) {
+	return send_error_packet(pkt, ERROR_INVALID_LENGTH, "%s packet: Invalid length", name);
 }
 
 static sends_a_packet
-send_error_invalid_register(const char *name) {
-	return send_error_packet(ERROR_INVALID_REGISTER, "%s packet: Invalid register", name);
+send_error_invalid_register(struct packet *pkt, const char *name) {
+	return send_error_packet(pkt, ERROR_INVALID_REGISTER, "%s packet: Invalid register", name);
 }
 
 static sends_a_packet
-send_error_cpu_not_stopped(const char *name, int cpu_id) {
-	return send_error_packet(ERROR_CPU_NOT_STOPPED,
+send_error_cpu_not_stopped(struct packet *pkt, const char *name, int cpu_id) {
+	return send_error_packet(pkt, ERROR_CPU_NOT_STOPPED,
 			"%s packet: CPU %d not stopped", name, cpu_id);
 }
 
 static sends_a_packet
-send_error_add_breakpoint(const char *name, uint64_t address) {
-	return send_error_packet(ERROR_ADD_BREAKPOINT,
+send_error_add_breakpoint(struct packet *pkt, const char *name, uint64_t address) {
+	return send_error_packet(pkt, ERROR_ADD_BREAKPOINT,
 			"%s packet: Could not add breakpoint at address 0x%016llx",
 			name, address);
 }
 
 static sends_a_packet
-send_error_jit_allocate(const char *name, uint64_t size) {
-	return send_error_packet(ERROR_JIT_ALLOCATE,
+send_error_jit_allocate(struct packet *pkt, const char *name, uint64_t size) {
+	return send_error_packet(pkt, ERROR_JIT_ALLOCATE,
 			"%s packet: Could not allocate 0x%016llx bytes of JIT memory",
 			name, size);
 }
 
 static sends_a_packet
-send_error_jit_deallocate(const char *name, uint64_t address) {
-	return send_error_packet(ERROR_JIT_DEALLOCATE,
+send_error_jit_deallocate(struct packet *pkt, const char *name, uint64_t address) {
+	return send_error_packet(pkt, ERROR_JIT_DEALLOCATE,
 			"%s packet: Address 0x%016llx was not allocated by JIT",
 			name, address);
 }
@@ -727,7 +739,7 @@ gdb_pkt__questionmark(struct packet *pkt) {
 static sends_a_packet
 gdb_pkt__c(struct packet *pkt) {
 	if (!pkt_r_empty(pkt)) {
-		return send_error_bad_packet("c");
+		return send_error_bad_packet(pkt, "c");
 	}
 	// First asynchronously resume the halted CPUs.
 	gdb_resume();
@@ -744,19 +756,18 @@ gdb_pkt__g(struct packet *pkt) {
 		return gdb_pkt__unknown();
 	}
 	if (gdb.current_cpu == -1) {
-		return send_error_no_thread_selected("g");
+		return send_error_no_thread_selected(pkt, "g");
 	}
 	if (!cpu_is_halted(gdb.current_cpu)) {
-		return send_error_cpu_not_stopped("g", gdb.current_cpu);
+		return send_error_cpu_not_stopped(pkt, "g", gdb.current_cpu);
 	}
 	// Read the registers.
 	struct gdb_registers registers;
 	gdb_stub_read_registers(gdb.current_cpu, &registers);
 	// Format the data as hex.
-	char buffer[GDB_RSP_MAX_PACKET_SIZE];
-	struct packet reply = PACKET_WITH_DATA(buffer, sizeof(buffer));
-	pkt_w_hex_data(&reply, &registers, sizeof(registers));
-	return send_packet(&reply);
+	make_reply_packet(pkt);
+	pkt_w_hex_data(pkt, &registers, sizeof(registers));
+	return send_packet(pkt);
 }
 
 // ---- G packet ----------------------------------------------------------------------------------
@@ -764,10 +775,10 @@ gdb_pkt__g(struct packet *pkt) {
 static sends_a_packet
 gdb_pkt__G(struct packet *pkt) {
 	if (gdb.current_cpu == -1) {
-		return send_error_no_thread_selected("G");
+		return send_error_no_thread_selected(pkt, "G");
 	}
 	if (!cpu_is_halted(gdb.current_cpu)) {
-		return send_error_cpu_not_stopped("G", gdb.current_cpu);
+		return send_error_cpu_not_stopped(pkt, "G", gdb.current_cpu);
 	}
 	struct gdb_registers registers;
 	size_t size;
@@ -775,7 +786,7 @@ gdb_pkt__G(struct packet *pkt) {
 		&& size == sizeof(registers)
 		&& pkt_r_empty(pkt);
 	if (!ok) {
-		return send_error_bad_packet("G");
+		return send_error_bad_packet(pkt, "G");
 	}
 	gdb_stub_write_registers(gdb.current_cpu, &registers);
 	return send_ok();
@@ -799,7 +810,7 @@ gdb_pkt__Hg(struct packet *pkt) {
 		ok = pkt_r_thread_id(pkt, &cpu_id)
 			&& pkt_r_empty(pkt);
 		if (!ok || cpu_id == INVALID_CPU) {
-			return send_error_bad_packet("Hg");
+			return send_error_bad_packet(pkt, "Hg");
 		}
 	}
 	// Set the current CPU.
@@ -826,7 +837,7 @@ gdb_pkt__H(struct packet *pkt) {
 static sends_a_packet
 gdb_pkt__k(struct packet *pkt) {
 	if (!pkt_r_empty(pkt)) {
-		return send_error_bad_packet("k");
+		return send_error_bad_packet(pkt, "k");
 	}
 	// Clear all backend state. This will delete breakpoints, watchpoints, JIT allocations,
 	// etc.
@@ -859,20 +870,19 @@ gdb_pkt__m(struct packet *pkt) {
 		&& pkt_r_hex_u64(pkt, &length)
 		&& pkt_r_empty(pkt);
 	if (!ok) {
-		return send_error_bad_packet("m");
+		return send_error_bad_packet(pkt, "m");
 	}
 	uint8_t data[GDB_RSP_MAX_PACKET_SIZE / 2];
 	if (length > sizeof(data)) {
-		return send_error_invalid_length("m");
+		return send_error_invalid_length(pkt, "m");
 	}
 	size_t read = gdb_stub_read_memory(gdb.current_cpu, address, data, length);
 	if (read == 0 && length > 0) {
-		return send_error_invalid_address("m", address);
+		return send_error_invalid_address(pkt, "m", address);
 	}
-	char buffer[GDB_RSP_MAX_PACKET_SIZE];
-	struct packet reply = PACKET_WITH_DATA(buffer, sizeof(buffer));
-	pkt_w_hex_data(&reply, data, read);
-	return send_packet(&reply);
+	make_reply_packet(pkt);
+	pkt_w_hex_data(pkt, data, read);
+	return send_packet(pkt);
 }
 
 // ---- M packet ----------------------------------------------------------------------------------
@@ -886,23 +896,23 @@ gdb_pkt__M(struct packet *pkt) {
 		&& pkt_r_hex_u64(pkt, &length)
 		&& pkt_r_match(pkt, ":");
 	if (!ok) {
-		return send_error_bad_packet("M");
+		return send_error_bad_packet(pkt, "M");
 	}
 	uint8_t data[GDB_RSP_MAX_PACKET_SIZE / 2];
 	if (length > sizeof(data)) {
-		return send_error_invalid_length("M");
+		return send_error_invalid_length(pkt, "M");
 	}
 	size_t size;
 	ok = pkt_r_hex_data(pkt, data, &size, sizeof(data))
 		&& size == length
 		&& pkt_r_empty(pkt);
 	if (!ok) {
-		return send_error_bad_packet("M");
+		return send_error_bad_packet(pkt, "M");
 	}
 	if (length > 0) {
 		size_t written = gdb_stub_write_memory(gdb.current_cpu, address, data, length);
 		if (written != length) {
-			return send_error_invalid_address("M", address + written);
+			return send_error_invalid_address(pkt, "M", address + written);
 		}
 	}
 	return send_ok();
@@ -916,13 +926,13 @@ gdb_pkt__p(struct packet *pkt) {
 	bool ok = pkt_r_hex_u64(pkt, &reg_id)
 		&& pkt_r_empty(pkt);
 	if (!ok) {
-		return send_error_bad_packet("p");
+		return send_error_bad_packet(pkt, "p");
 	}
 	if ((reg_id_t) reg_id != reg_id || reg_id > gdb_register_count) {
-		return send_error_invalid_register("p");
+		return send_error_invalid_register(pkt, "p");
 	}
 	if (!cpu_is_halted(gdb.current_cpu)) {
-		return send_error_cpu_not_stopped("p", gdb.current_cpu);
+		return send_error_cpu_not_stopped(pkt, "p", gdb.current_cpu);
 	}
 	// Read the register value.
 	const struct gdb_register_info *reg = &gdb_register_info[reg_id];
@@ -931,10 +941,9 @@ gdb_pkt__p(struct packet *pkt) {
 	uint8_t *register_data = (uint8_t *)&registers + reg->offset;
 	size_t register_size = reg->bitsize / 8;
 	// Format the data as hex.
-	char buffer[GDB_RSP_MAX_PACKET_SIZE];
-	struct packet reply = PACKET_WITH_DATA(buffer, sizeof(buffer));
-	pkt_w_hex_data(&reply, register_data, register_size);
-	return send_packet(&reply);
+	make_reply_packet(pkt);
+	pkt_w_hex_data(pkt, register_data, register_size);
+	return send_packet(pkt);
 }
 
 // ---- P packet ----------------------------------------------------------------------------------
@@ -949,17 +958,17 @@ gdb_pkt__P(struct packet *pkt) {
 		&& pkt_r_hex_data(pkt, &reg_value, &reg_size, sizeof(reg_value))
 		&& pkt_r_empty(pkt);
 	if (!ok) {
-		return send_error_bad_packet("P");
+		return send_error_bad_packet(pkt, "P");
 	}
 	if ((reg_id_t) reg_id != reg_id || reg_id > gdb_register_count) {
-		return send_error_invalid_register("P");
+		return send_error_invalid_register(pkt, "P");
 	}
 	const struct gdb_register_info *reg = &gdb_register_info[reg_id];
 	if (reg_size != reg->bitsize / 8) {
-		return send_error_invalid_register("P");
+		return send_error_invalid_register(pkt, "P");
 	}
 	if (!cpu_is_halted(gdb.current_cpu)) {
-		return send_error_cpu_not_stopped("P", gdb.current_cpu);
+		return send_error_cpu_not_stopped(pkt, "P", gdb.current_cpu);
 	}
 	// Read all registers.
 	struct gdb_registers registers;
@@ -976,27 +985,25 @@ gdb_pkt__P(struct packet *pkt) {
 
 static sends_a_packet
 gdb_pkt__qC(struct packet *pkt) {
-	char buffer[GDB_RSP_MAX_PACKET_SIZE];
-	struct packet reply = PACKET_WITH_DATA(buffer, sizeof(buffer));
-	pkt_w_sprintf(&reply, "QC");
-	pkt_w_thread_id(&reply, gdb.current_cpu);
-	return send_packet(&reply);
+	make_reply_packet(pkt);
+	pkt_w_sprintf(pkt, "QC");
+	pkt_w_thread_id(pkt, gdb.current_cpu);
+	return send_packet(pkt);
 }
 
 // ---- qfThreadInfo packet -----------------------------------------------------------------------
 
 static sends_a_packet
 gdb_pkt__qfThreadInfo(struct packet *pkt) {
-	char buffer[GDB_RSP_MAX_PACKET_SIZE];
-	struct packet reply = PACKET_WITH_DATA(buffer, sizeof(buffer));
-	pkt_w_sprintf(&reply, "m");
+	make_reply_packet(pkt);
+	pkt_w_sprintf(pkt, "m");
 	for (int cpu_id = 0; cpu_id < CPU_COUNT; cpu_id++) {
 		if (valid_cpu_id(cpu_id)) {
-			pkt_w_sprintf(&reply, "%x,", thread_for_cpu(cpu_id));
+			pkt_w_sprintf(pkt, "%x,", thread_for_cpu(cpu_id));
 		}
 	}
-	pkt_w_chop(&reply, 1);
-	return send_packet(&reply);
+	pkt_w_chop(pkt, 1);
+	return send_packet(pkt);
 }
 
 // ---- qRcmd coresight-ed packet -----------------------------------------------------------------
@@ -1013,7 +1020,7 @@ gdb_pkt__qRcmd_coresight_ed(struct packet *pkt) {
 	int cpu_id = (int) cpu_id_big;
 	if (!ok || cpu_id != cpu_id_big || !valid_cpu_id(cpu_id)
 			|| (offset % 4) != 0 || offset >= 0x1000) {
-		return send_error_bad_packet("qRcmd:coresight-ed");
+		return send_error_bad_packet(pkt, "qRcmd:coresight-ed");
 	}
 	// Read the value of the external debug register. This is a layering violation, so we
 	// declare the external_debug_registers array directly rather than include the header.
@@ -1021,12 +1028,11 @@ gdb_pkt__qRcmd_coresight_ed(struct packet *pkt) {
 	extern uint64_t external_debug_registers[];
 	uint32_t value = *(volatile uint32_t *)(external_debug_registers[cpu_id] + offset);
 	// Build the reply.
-	char buffer[GDB_RSP_MAX_PACKET_SIZE];
-	struct packet reply = PACKET_WITH_DATA(buffer, sizeof(buffer));
-	size_t hex_size = pkt_w_encode_hex_prepare(&reply);
-	pkt_w_sprintf(&reply, "%08x", value);
-	pkt_w_encode_hex(&reply, hex_size);
-	return send_packet(&reply);
+	make_reply_packet(pkt);
+	size_t hex_size = pkt_w_encode_hex_prepare(pkt);
+	pkt_w_sprintf(pkt, "%08x", value);
+	pkt_w_encode_hex(pkt, hex_size);
+	return send_packet(pkt);
 }
 
 // ---- qRcmd packet ------------------------------------------------------------------------------
@@ -1053,7 +1059,7 @@ gdb_pkt__qRcmd(struct packet *pkt) {
 	bool ok = pkt_r_hex_data(pkt, pkt->data, &size, pkt->size)
 		&& pkt_r_empty(pkt);
 	if (!ok) {
-		return send_error_bad_packet("qRcmd");
+		return send_error_bad_packet(pkt, "qRcmd");
 	}
 	// Set the new packet size and cursor.
 	pkt->size = size;
@@ -1074,13 +1080,12 @@ gdb_pkt__qsThreadInfo(struct packet *pkt) {
 
 static sends_a_packet
 gdb_pkt__qSupported(struct packet *pkt) {
-	char buffer[GDB_RSP_MAX_PACKET_SIZE];
-	struct packet reply = PACKET_WITH_DATA(buffer, sizeof(buffer));
-	pkt_w_sprintf(&reply, "PacketSize=%x;", GDB_RSP_MAX_PACKET_SIZE);
-	pkt_w_sprintf(&reply, "hwbreak+;");
-	pkt_w_sprintf(&reply, "qXfer:features:read+;");
-	pkt_w_chop(&reply, 1);
-	return send_packet(&reply);
+	make_reply_packet(pkt);
+	pkt_w_sprintf(pkt, "PacketSize=%x;", GDB_RSP_MAX_PACKET_SIZE);
+	pkt_w_sprintf(pkt, "hwbreak+;");
+	pkt_w_sprintf(pkt, "qXfer:features:read+;");
+	pkt_w_chop(pkt, 1);
+	return send_packet(pkt);
 }
 
 // ---- qXfer:features:read:target.xml packet -----------------------------------------------------
@@ -1182,11 +1187,11 @@ gdb_pkt__qXfer_features_read_target_xml(struct packet *pkt) {
 		&& pkt_r_hex_u64(pkt, &length)
 		&& pkt_r_empty(pkt);
 	if (!ok || length > sizeof(buffer) - 1) {
-		return send_error_bad_packet("qXfer");
+		return send_error_bad_packet(pkt, "qXfer");
 	}
 	size_t xml_size = build_target_xml(buffer + 1, length, offset);
 	if (offset > xml_size) {
-		return send_error_bad_packet("qXfer");
+		return send_error_bad_packet(pkt, "qXfer");
 	}
 	size_t fragment_size = xml_size - offset;
 	if (fragment_size <= length) {
@@ -1206,10 +1211,10 @@ gdb_pkt__qThreadStopInfo(struct packet *pkt) {
 	bool ok = pkt_r_thread_id(pkt, &cpu_id)
 		&& pkt_r_empty(pkt);
 	if (!ok || cpu_id == INVALID_CPU) {
-		return send_error_bad_packet("qThreadStopInfo");
+		return send_error_bad_packet(pkt, "qThreadStopInfo");
 	}
 	if (!cpu_is_halted(cpu_id)) {
-		return send_error_cpu_not_stopped("qThreadStopInfo", cpu_id);
+		return send_error_cpu_not_stopped(pkt, "qThreadStopInfo", cpu_id);
 	}
 	return send_T_stop_reply_packet(cpu_id, true);
 }
@@ -1218,46 +1223,43 @@ gdb_pkt__qThreadStopInfo(struct packet *pkt) {
 
 static sends_a_packet
 gdb_pkt__qHostInfo(struct packet *pkt) {
-	char buffer[GDB_RSP_MAX_PACKET_SIZE];
-	struct packet reply = PACKET_WITH_DATA(buffer, sizeof(buffer));
+	make_reply_packet(pkt);
 	if (gdb.mach_header != NULL) {
-		pkt_w_sprintf(&reply, "cputype:%u;", gdb.mach_header->cputype);
-		pkt_w_sprintf(&reply, "cpusubtype:%u;", gdb.mach_header->cpusubtype);
+		pkt_w_sprintf(pkt, "cputype:%u;", gdb.mach_header->cputype);
+		pkt_w_sprintf(pkt, "cpusubtype:%u;", gdb.mach_header->cpusubtype);
 	}
-	pkt_w_sprintf(&reply, "ostype:ios;");
-	pkt_w_sprintf(&reply, "watchpoint_exceptions_received:before;");
-	pkt_w_sprintf(&reply, "vendor:apple;");
-	pkt_w_sprintf(&reply, "endian:little;");
-	pkt_w_sprintf(&reply, "ptrsize:8;");
-	return send_packet(&reply);
+	pkt_w_sprintf(pkt, "ostype:ios;");
+	pkt_w_sprintf(pkt, "watchpoint_exceptions_received:before;");
+	pkt_w_sprintf(pkt, "vendor:apple;");
+	pkt_w_sprintf(pkt, "endian:little;");
+	pkt_w_sprintf(pkt, "ptrsize:8;");
+	return send_packet(pkt);
 }
 
 // ---- qProcessInfo packet -----------------------------------------------------------------------
 
 static sends_a_packet
 gdb_pkt__qProcessInfo(struct packet *pkt) {
-	char buffer[GDB_RSP_MAX_PACKET_SIZE];
-	struct packet reply = PACKET_WITH_DATA(buffer, sizeof(buffer));
-	pkt_w_sprintf(&reply, "pid:0;");
+	make_reply_packet(pkt);
+	pkt_w_sprintf(pkt, "pid:0;");
 	if (gdb.mach_header != NULL) {
-		pkt_w_sprintf(&reply, "cputype:%x;", gdb.mach_header->cputype);
-		pkt_w_sprintf(&reply, "cpusubtype:%x;", gdb.mach_header->cpusubtype);
+		pkt_w_sprintf(pkt, "cputype:%x;", gdb.mach_header->cputype);
+		pkt_w_sprintf(pkt, "cpusubtype:%x;", gdb.mach_header->cpusubtype);
 	}
-	pkt_w_sprintf(&reply, "ostype:ios;");
-	pkt_w_sprintf(&reply, "vendor:apple;");
-	pkt_w_sprintf(&reply, "endian:little;");
-	pkt_w_sprintf(&reply, "ptrsize:8;");
-	return send_packet(&reply);
+	pkt_w_sprintf(pkt, "ostype:ios;");
+	pkt_w_sprintf(pkt, "vendor:apple;");
+	pkt_w_sprintf(pkt, "endian:little;");
+	pkt_w_sprintf(pkt, "ptrsize:8;");
+	return send_packet(pkt);
 }
 
 // ---- qWatchpointSupportInfo packet -------------------------------------------------------------
 
 static sends_a_packet
 gdb_pkt__qWatchpointSupportInfo(struct packet *pkt) {
-	char buffer[GDB_RSP_MAX_PACKET_SIZE];
-	struct packet reply = PACKET_WITH_DATA(buffer, sizeof(buffer));
-	pkt_w_sprintf(&reply, "num:%u;", gdb.hardware_watchpoint_count);
-	return send_packet(&reply);
+	make_reply_packet(pkt);
+	pkt_w_sprintf(pkt, "num:%u;", gdb.hardware_watchpoint_count);
+	return send_packet(pkt);
 }
 
 // ---- q packet ----------------------------------------------------------------------------------
@@ -1309,10 +1311,10 @@ gdb_pkt__QNonStop(struct packet *pkt) {
 	bool ok = pkt_r_char(pkt, &enable)
 		&& pkt_r_empty(pkt);
 	if (!ok) {
-		return send_error_bad_packet("QNonStop");
+		return send_error_bad_packet(pkt, "QNonStop");
 	}
 	if (enable != '0' && enable != '1') {
-		return send_error_bad_packet("QNonStop");
+		return send_error_bad_packet(pkt, "QNonStop");
 	}
 	if (enable == '0') {
 		// Switch to all-stop mode.
@@ -1380,7 +1382,7 @@ gdb_pkt__vCont(struct packet *pkt) {
 	}
 	// We can't have zero actions.
 	if (pkt_r_empty(pkt)) {
-		return send_error_bad_packet("vCont");
+		return send_error_bad_packet(pkt, "vCont");
 	}
 	// Each action is of the form ";action[:thread-id]". The earliest action matching a CPU is
 	// the one that is applied.
@@ -1390,10 +1392,10 @@ gdb_pkt__vCont(struct packet *pkt) {
 		bool ok = pkt_r_match(pkt, ";")
 			&& pkt_r_char(pkt, &action);
 		if (!ok) {
-			return send_error_bad_packet("vCont");
+			return send_error_bad_packet(pkt, "vCont");
 		}
 		if (action != 'c' && action != 's' && action != 't') {
-			return send_error_bad_packet("vCont");
+			return send_error_bad_packet(pkt, "vCont");
 		}
 		bool have_thread = pkt_r_match(pkt, ":");
 		if (!have_thread) {
@@ -1408,7 +1410,7 @@ set_action_for_all_cpus:
 		int cpu_id;
 		ok = pkt_r_thread_id(pkt, &cpu_id);
 		if (!ok || cpu_id == INVALID_CPU) {
-			return send_error_bad_packet("vCont");
+			return send_error_bad_packet(pkt, "vCont");
 		}
 		if (cpu_id == -1) {
 			goto set_action_for_all_cpus;
@@ -1470,18 +1472,18 @@ gdb_pkt__x(struct packet *pkt) {
 		&& pkt_r_hex_u64(pkt, &length)
 		&& pkt_r_empty(pkt);
 	if (!ok) {
-		return send_error_bad_packet("x");
+		return send_error_bad_packet(pkt, "x");
 	}
 	if (address == 0 && length == 0) {
 		return send_ok();
 	}
 	uint8_t data[GDB_RSP_MAX_PACKET_SIZE];
 	if (length > sizeof(data)) {
-		return send_error_invalid_length("x");
+		return send_error_invalid_length(pkt, "x");
 	}
 	size_t read = gdb_stub_read_memory(gdb.current_cpu, address, data, length);
 	if (read == 0 && length > 0) {
-		return send_error_invalid_address("x", address);
+		return send_error_invalid_address(pkt, "x", address);
 	}
 	return send_packet_data(data, length);
 }
@@ -1501,12 +1503,12 @@ gdb_pkt__X(struct packet *pkt) {
 		&& pkt_r_data(pkt, &data, &size)
 		&& size == length;
 	if (!ok) {
-		return send_error_bad_packet("X");
+		return send_error_bad_packet(pkt, "X");
 	}
 	if (length > 0) {
 		size_t written = gdb_stub_write_memory(gdb.current_cpu, address, data, length);
 		if (written != length) {
-			return send_error_invalid_address("X", address + written);
+			return send_error_invalid_address(pkt, "X", address + written);
 		}
 	}
 	return send_ok();
@@ -1524,9 +1526,9 @@ parse_z_base(struct packet *pkt, uint64_t *type, uint64_t *address, uint64_t *ki
 }
 
 static sends_a_packet
-clear_hardware_breakpoint(uint64_t address, uint64_t kind) {
+clear_hardware_breakpoint(struct packet *pkt, uint64_t address, uint64_t kind) {
 	if (kind != sizeof(uint32_t) && kind != 0) {
-		return send_error_bad_packet("z");
+		return send_error_bad_packet(pkt, "z");
 	}
 	// Remove a hardware breakpoint at the specified address on all CPUs. We ignore whether the
 	// operation succeeded.
@@ -1535,7 +1537,7 @@ clear_hardware_breakpoint(uint64_t address, uint64_t kind) {
 }
 
 static sends_a_packet
-clear_hardware_watchpoint(uint64_t type, uint64_t address, uint64_t kind) {
+clear_hardware_watchpoint(struct packet *pkt, uint64_t type, uint64_t address, uint64_t kind) {
 	// Clear a hardware watchpoint at the specified address on all CPUs. The kind parameter is
 	// the size of the watchpoint. We ignore whether the operation succeeded.
 	size_t size = kind;
@@ -1551,17 +1553,17 @@ gdb_pkt__z(struct packet *pkt) {
 	bool ok = parse_z_base(pkt, &type, &address, &kind)
 		&& pkt_r_empty(pkt);
 	if (!ok) {
-		return send_error_bad_packet("z");
+		return send_error_bad_packet(pkt, "z");
 	}
 	switch (type) {
 		case 1:	// Hardware breakpoint.
-			return clear_hardware_breakpoint(address, kind);
+			return clear_hardware_breakpoint(pkt, address, kind);
 		case 2:	// Write watchpoint.
-			return clear_hardware_watchpoint('w', address, kind);
+			return clear_hardware_watchpoint(pkt, 'w', address, kind);
 		case 3:	// Read watchpoint.
-			return clear_hardware_watchpoint('r', address, kind);
+			return clear_hardware_watchpoint(pkt, 'r', address, kind);
 		case 4:	// Access watchpoint.
-			return clear_hardware_watchpoint('a', address, kind);
+			return clear_hardware_watchpoint(pkt, 'a', address, kind);
 		default:
 			return gdb_pkt__unknown();
 	}
@@ -1573,15 +1575,15 @@ static sends_a_packet
 set_hardware_breakpoint(uint64_t address, uint64_t kind, struct packet *pkt) {
 	if (!pkt_r_empty(pkt)) {
 		// For now, we don't handle cond_list or cmds.
-		return send_error_bad_packet("Z");
+		return send_error_bad_packet(pkt, "Z");
 	}
 	if (kind != sizeof(uint32_t) && kind != 0) {
-		return send_error_bad_packet("Z");
+		return send_error_bad_packet(pkt, "Z");
 	}
 	// Add a hardware breakpoint at the specified address on all CPUs.
 	bool ok = gdb_stub_set_hardware_breakpoint(address);
 	if (!ok) {
-		return send_error_add_breakpoint("Z", address);
+		return send_error_add_breakpoint(pkt, "Z", address);
 	}
 	return send_ok();
 }
@@ -1589,14 +1591,14 @@ set_hardware_breakpoint(uint64_t address, uint64_t kind, struct packet *pkt) {
 static sends_a_packet
 set_hardware_watchpoint(char type, uint64_t address, uint64_t kind, struct packet *pkt) {
 	if (!pkt_r_empty(pkt)) {
-		return send_error_bad_packet("Z");
+		return send_error_bad_packet(pkt, "Z");
 	}
 	// Add a hardware watchpoint at the specified address on all CPUs. The kind parameter is
 	// the size of the watchpoint.
 	size_t size = kind;
 	bool ok = gdb_stub_set_hardware_watchpoint(address, size, type);
 	if (!ok) {
-		return send_error_add_breakpoint("Z", address);
+		return send_error_add_breakpoint(pkt, "Z", address);
 	}
 	return send_ok();
 }
@@ -1608,7 +1610,7 @@ gdb_pkt__Z(struct packet *pkt) {
 	uint64_t kind;
 	bool ok = parse_z_base(pkt, &type, &address, &kind);
 	if (!ok) {
-		return send_error_bad_packet("Z");
+		return send_error_bad_packet(pkt, "Z");
 	}
 	switch (type) {
 		case 1:	// Hardware breakpoint.
@@ -1633,24 +1635,23 @@ gdb_pkt___M(struct packet *pkt) {
 		&& pkt_r_match(pkt, ",")
 		&& !pkt_r_empty(pkt);
 	if (!ok) {
-		return send_error_bad_packet("_M");
+		return send_error_bad_packet(pkt, "_M");
 	}
 	bool r = pkt_r_match(pkt, "r");
 	bool w = pkt_r_match(pkt, "w");
 	bool x = pkt_r_match(pkt, "x");
 	ok = pkt_r_empty(pkt);
 	if (!ok) {
-		return send_error_bad_packet("_M");
+		return send_error_bad_packet(pkt, "_M");
 	}
 	int perm = (!!r << 2) | (!!w << 1) | (!!x << 0);
 	uint64_t addr = gdb_stub_allocate_jit_memory(size, perm);
 	if (addr == 0) {
-		return send_error_jit_allocate("_M", size);
+		return send_error_jit_allocate(pkt, "_M", size);
 	}
-	char buffer[GDB_RSP_MAX_PACKET_SIZE];
-	struct packet reply = PACKET_WITH_DATA(buffer, sizeof(buffer));
-	pkt_w_sprintf(&reply, "%llx", addr);
-	return send_packet(&reply);
+	make_reply_packet(pkt);
+	pkt_w_sprintf(pkt, "%llx", addr);
+	return send_packet(pkt);
 }
 
 // ---- _m packet ---------------------------------------------------------------------------------
@@ -1661,11 +1662,11 @@ gdb_pkt___m(struct packet *pkt) {
 	bool ok = pkt_r_hex_u64(pkt, &addr)
 		&& pkt_r_empty(pkt);
 	if (!ok) {
-		return send_error_bad_packet("_m");
+		return send_error_bad_packet(pkt, "_m");
 	}
 	ok = gdb_stub_deallocate_jit_memory(addr);
 	if (!ok) {
-		return send_error_jit_deallocate("_m", addr);
+		return send_error_jit_deallocate(pkt, "_m", addr);
 	}
 	return send_ok();
 }
@@ -1741,7 +1742,7 @@ unknown:
 void
 gdb_process_packet(void *data, size_t size) {
 	struct packet pkt = PACKET_WITH_DATA(data, size);
-	gdb_process_packet_internal(&pkt);
+	send_a_packet(gdb_process_packet_internal(&pkt));
 }
 
 // ---- Handle CPU halts and send packets to GDB --------------------------------------------------
@@ -1756,7 +1757,7 @@ gdb_process_cpu_halts(uint32_t halted_mask) {
 		// If there is no outstanding notification sequence pending, send the first stop
 		// reply notification.
 		if (gdb.non_stop.pending == 0) {
-			non_stop__send_stop_reply_packet(false);
+			send_a_packet(non_stop__send_stop_reply_packet(false));
 		}
 		// Otherwise, there is an outstanding stop reply notification or packet in a
 		// notification sequence. (This could even be due to a "?" packet.) This
@@ -1773,7 +1774,7 @@ gdb_process_cpu_halts(uint32_t halted_mask) {
 		gdb.all_stop.stop_reply_deferred = false;
 		// Send a stop reply for one of the halted CPUs. If we hit a breakpoint, then we
 		// should have switched the current CPU to that CPU, so we should report it now.
-		all_stop__send_stop_reply_packet();
+		send_a_packet(all_stop__send_stop_reply_packet());
 	}
 	// Otherwise, if we don't have a deferred stop reply or if not all the CPUs have halted
 	// yet, do nothing.
