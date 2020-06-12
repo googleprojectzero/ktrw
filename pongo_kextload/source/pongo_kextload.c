@@ -874,81 +874,195 @@ command_kextload(const char *cmd, char *args) {
 // The next pre-boot hook in the chain.
 static void (*next_preboot_hook)(void);
 
+// Extract bits from an integer.
+static inline uintmax_t
+bits(uintmax_t x, unsigned sign, unsigned hi, unsigned lo, unsigned shift) {
+	const unsigned bits = sizeof(uintmax_t) * 8;
+	unsigned d = bits - (hi - lo + 1);
+	if (sign) {
+		return (uintmax_t) (((((intmax_t)  x) >> lo) << d) >> (d - shift));
+	} else {
+		return (((((uintmax_t) x) >> lo) << d) >> (d - shift));
+	}
+}
+
+// Test whether the instruction matches the specified pattern.
+static bool
+MATCH(uint32_t insn, uint32_t match, uint32_t mask) {
+	return ((insn & mask) == match);
+}
+
+// Resolve an ADRP/ADD instruction sequence to the pointer to the target value.
+static void *
+RESOLVE_ADRP_ADD(uint32_t *insn) {
+	uint32_t adrp = insn[0];
+	uint32_t add  = insn[1];
+	// All registers must match. Also disallow SP.
+	unsigned reg0 = (unsigned) bits(adrp, 0, 4, 0, 0);
+	unsigned reg1 = (unsigned) bits(add,  0, 4, 0, 0);
+	unsigned reg2 = (unsigned) bits(add,  0, 9, 5, 0);
+	if (reg0 != reg1 || reg1 != reg2 || reg0 == 0x1f) {
+		return NULL;
+	}
+	// Compute the target address.
+	uint64_t pc = va_for_ptr(&insn[0]);
+	uint64_t imm0 = bits(adrp, 1, 23, 5, 12+2) | bits(adrp, 0, 30, 29, 12);
+	uint64_t imm1 = bits(add, 0, 21, 10, 0);
+	uint64_t target = (pc & ~0xFFFuLL) + imm0 + imm1;
+	return ptr_for_va(target);
+}
+
 // Called to patch the KTRR MMU lockdown instruction sequence.
 static bool
 ktrr_mmu_patch(xnu_pf_patch_t *patch, void *cacheable_stream) {
-	puts("Disabling KTRR MMU lockdown");
 	uint32_t *insn = cacheable_stream;
-	insn[0] = 0xD503201F;
-	insn[2] = 0xD503201F;
-	insn[4] = 0xD503201F;
+	puts("Disabling KTRR MMU lockdown");
+	insn[0] = 0xD503201F;	// NOP
+	insn[2] = 0xD503201F;	// NOP
+	insn[4] = 0xD503201F;	// NOP
 	return true;
 }
 
 // Called to patch the KTRR AMCC lockdown instruction sequence.
 static bool
 ktrr_amcc_patch(xnu_pf_patch_t *patch, void *cacheable_stream) {
-	puts("Disabling KTRR AMCC lockdown");
 	uint32_t *insn = cacheable_stream;
-	insn[0] = 0xD503201F;
-	insn[2] = 0xD503201F;
-	insn[3] = 0xD503201F;
-	insn[4] = 0xD503201F;
+	puts("Disabling KTRR AMCC lockdown");
+	insn[0] = 0xD503201F;	// NOP
+	insn[2] = 0xD503201F;	// NOP
+	insn[3] = 0xD503201F;	// NOP
+	insn[4] = 0xD503201F;	// NOP
 	return true;
 }
 
-// Disable KTRR on the MMU and AMCC by patching the kernelcache. This is needed to ensure our
-// kernel extension can run.
+// Called to patch the OSKext::initWithPrelinkedInfoDict() function.
+static bool
+OSKext_init_patch(xnu_pf_patch_t *patch, void *cacheable_stream) {
+	const int MAX_SEARCH = 30;
+	uint32_t *insn = cacheable_stream;
+	// First we need to resolve the ADRP/ADD target at [2].
+	void *target = RESOLVE_ADRP_ADD(&insn[2]);
+	if (target == NULL) {
+		return false;
+	}
+	// Check if the target is "_PrelinkBundlePath", which indicates that this function is
+	// OSKext::initWithPrelinkedInfoDict(). Bailing here is the most common path.
+	if (strcmp(target, "_PrelinkBundlePath") != 0) {
+		return false;
+	}
+	puts("Patching OSKext::initWithPrelinkedInfoDict()");
+	// Search backwards until we get the prologue. Record the instruction that MOVs from X2.
+	uint32_t *x2_insn = NULL;
+	for (int i = 0;; i--) {
+		if (i < -MAX_SEARCH) {
+			return false;
+		}
+		// Check for either of the following instructions, signaling we hit the prologue:
+		// 	SUB  SP, SP, #0xNNN		;; 0xNNN < 0x400
+		// 	STP  X28, X27, [SP,#0xNNN]	;; 0xNNN < 0x100
+		bool prologue = MATCH(insn[i], 0xD10003FF, 0xFFF01FFF)
+			|| MATCH(insn[i], 0xA9006FFC, 0xFFC0FFFF);
+		if (prologue) {
+			break;
+		}
+		// Check for the instruction that saves argument X2, doCoalesedSlides:
+		// 	MOV  Xn, X2
+		bool mov_xn_x2 = MATCH(insn[i], 0xAA0203E0, 0xFFFFFFE0);
+		if (mov_xn_x2) {
+			x2_insn = &insn[i];
+		}
+	}
+	// Check that we found the target instruction.
+	if (x2_insn == NULL) {
+		return false;
+	}
+	// Patch the instruction to zero out doCoalesedSlides:
+	// 	MOV  Xn, XZR
+	*x2_insn |= 0x001F0000;
+	// We no longer need to match this. Disabling the patch speeds up execution time, since the
+	// pattern is pretty frequent.
+	xnu_pf_disable_patch(patch);
+	return true;
+}
+
+// Apply the kernel patches needed for running loaded kernel extensions.
+//
+//     1. Disable KTRR on the MMU and AMCC to ensure our kernel extension can run outside the KTRR
+//        RoRgn.
+//     2. Force OSKext::initWithPrelinkedInfoDict() to set doCoalesedSlides to false so that
+//        OSKext::setVMAttributes() is called. (Technically this is only needed on
+//        _PrelinkKASLROffsets kernelcaches, but it is safe to apply always.)
 static void
-disable_ktrr() {
-	// Patch out KTRR MMU lockdown.
+kextload_patch() {
 	xnu_pf_patchset_t *patchset = xnu_pf_patchset_create(XNU_PF_ACCESS_32BIT);
+
+	// Patch out KTRR MMU lockdown.
 	const uint32_t ktrr_mmu_count = 5;
 	uint64_t ktrr_mmu_match[ktrr_mmu_count] = {
-		0xD51CF271,
-		0,
-		0xD51CF293,
-		0,
-		0xD51CF251,
+		0xD51CF260,	// [0]  MSR  s3_4_c15_c2_3, Xn
+		0x00000000,	// [1]  ?
+		0xD51CF280,	// [2]  MSR  s3_4_c15_c2_4, Xn
+		0x00000000,	// [3]  ?
+		0xD51CF240,	// [4]  MSR  s3_4_c15_c2_2, Xn
 	};
 	uint64_t ktrr_mmu_mask[ktrr_mmu_count] = {
-		0xFFFFFFFF,
-		0x00000000,
-		0xFFFFFFFF,
-		0x00000000,
-		0xFFFFFFFF,
+		0xFFFFFFE0,	// [0]  MSR
+		0x00000000,	// [1]  ?
+		0xFFFFFFE0,	// [2]  MSR
+		0x00000000,	// [3]  ?
+		0xFFFFFFE0,	// [4]  MSR
 	};
 	xnu_pf_maskmatch(patchset, ktrr_mmu_match, ktrr_mmu_mask, ktrr_mmu_count,
 			true, ktrr_mmu_patch);
 
 	// Patch out KTRR AMCC lockdown.
-	const uint32_t ktrr_amcc_count = 2;
+	const uint32_t ktrr_amcc_count = 5;
 	uint64_t ktrr_amcc_match[ktrr_amcc_count] = {
-		//FFFFFFF007CDDDC0         STR     W9, [X8,#0x7EC]
-		//FFFFFFF007CDDDC4         ISB
-		//FFFFFFF007CDDDC8         MSR     #4, c15, c2, #3, X19
-		//FFFFFFF007CDDDCC         MSR     #4, c15, c2, #4, X22
-		//FFFFFFF007CDDDD0         MSR     #4, c15, c2, #2, X9
-		0xB907ED09,
-		0xD5033FDF,
+		0xB907EC00,	// [0]  STR  Wn, [Xn,#0x7EC]
+		0xD5033FDF,	// [1]  ISB
+		0xD51CF260,	// [2]  MSR  s3_4_c15_c2_3, Xn
+		0xD51CF280,	// [3]  MSR  s3_4_c15_c2_4, Xn
+		0xD51CF240,	// [4]  MSR  s3_4_c15_c2_2, Xn
 	};
 	uint64_t ktrr_amcc_mask[ktrr_amcc_count] = {
-		0xFFFFFFFF,
-		0xFFFFFFFF,
+		0xFFFFFC00,	// [0]  STR
+		0xFFFFFFFF,	// [1]  ISB
+		0xFFFFFFE0,	// [2]  MSR
+		0xFFFFFFE0,	// [3]  MSR
+		0xFFFFFFE0,	// [4]  MSR
 	};
 	xnu_pf_maskmatch(patchset, ktrr_amcc_match, ktrr_amcc_mask, ktrr_amcc_count,
 			true, ktrr_amcc_patch);
+
+	// Patch the prologue of OSKext::initWithPrelinkedInfoDict() to set doCoalesedSlides to
+	// false. This enables the call to OSKext::setVMAttributes() later in the function on
+	// _PrelinkKASLROffsets kernelcaches, which is required to ensure that the kernel extension
+	// gets mapped with proper permissions.
+	const uint32_t OSKext_init_count = 6;
+	uint64_t OSKext_init_match[OSKext_init_count] = {
+		0xF9400000,	// [0]  LDR  Xn, [Xn]
+		0xF9400000,	// [1]  LDR  Xn, [Xn,#0xNNN]		;; 0xNNN < 0x200
+		0x90000001,	// [2]  ADRP X1, #0xNNN
+		0x91000021,	// [3]  ADD  X1, X1, #0xNNN		;; 0xNNN < 2^(12)
+		0xAA0003E0,	// [4]  MOV  X0, Xn
+		0xD63F0000,	// [5]  BLR  Xn
+	};
+	uint64_t OSKext_init_mask[OSKext_init_count] = {
+		0xFFFFFC00,	// [0]  LDR
+		0xFFFF0000,	// [1]  LDR
+		0x9F00001F,	// [2]  ADRP
+		0xFFC003FF,	// [3]  ADD
+		0xFFE0FFFF,	// [4]  MOV
+		0xFFFFFC1F,	// [5]  BLR
+	};
+	xnu_pf_maskmatch(patchset, OSKext_init_match, OSKext_init_mask, OSKext_init_count,
+			true, OSKext_init_patch);
+
+	// Run the patchset to patch the kernel.
 	xnu_pf_emit(patchset);
 	xnu_pf_range_t *text_exec = xnu_pf_segment(xnu_header(), "__TEXT_EXEC");
 	xnu_pf_apply(text_exec, patchset);
 	xnu_pf_patchset_destroy(patchset);
-}
-
-// Apply the kernel patches needed for running loaded kernel extensions.
-static void
-kextload_patch() {
-	// Disable KTRR. This is necessary to load a kernel extension.
-	disable_ktrr();
 }
 
 // The pre-boot hook for loading kernel extensions.
