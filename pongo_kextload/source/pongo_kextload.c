@@ -707,13 +707,12 @@ kext_link(struct kext_load_info *info) {
 }
 
 // A __PRELINK_INFO.__info OSUnserializeXML dictionary describing the kernel extension.
-// TODO: Update the name. Unique names are required for loading multiple kernel extensions.
 static const char *prelink_info_str = "\
 <dict>\
 <key>CFBundleName</key>\
-<string>KTRW_HAX</string>\
+<string>KTRW_NNN0</string>\
 <key>CFBundleIdentifier</key>\
-<string>com.apple.kec.KTRW_HAX</string>\
+<string>com.apple.kec.KTRW_NNN1</string>\
 <key>CFBundleInfoDictionaryVersion</key>\
 <string>6.0</string>\
 <key>OSBundleCompatibleVersion</key>\
@@ -772,15 +771,18 @@ static const char *prelink_info_str = "\
 </array>\
 </dict>";
 
+// The ID of the next kext to load, used to ensure __PRELINK_INFO dictionaries have unique keys.
+static unsigned kext_id = 0;
+
 // A table for converting a hexadecimal digit 0x0-0xf into its character representation.
 static const char hex_char[16] = "0123456789abcdef";
 
-// Format a 64-bit value as a 16-character hexadecimal numeric string. This is used by
+// Format a 64-bit value as an n-character hexadecimal numeric string. This is used by
 // kext_insert() to write values into the __PRELINK_INFO.__info dictionary.
 static void
-format_hex(char buf[16], uint64_t value) {
-	for (int i = 0; i < 16; i++) {
-		buf[16 - (i + 1)] = hex_char[value & 0xf];
+format_hex(char *buf, size_t n, uint64_t value) {
+	for (size_t i = 0; i < n; i++) {
+		buf[n - (i + 1)] = hex_char[value & 0xf];
 		value >>= 4;
 	}
 }
@@ -824,14 +826,20 @@ kext_insert(struct kext_load_info *info) {
 	char *end = p + info_size;
 	strcpy(end, "</array></dict>");
 	// Patch up the info dict fields. _PrelinkKmodInfo must be unslid.
+	char *nnn0 = memmem(p, info_size, "NNN0", 4);
+	char *nnn1 = memmem(p, info_size, "NNN1", 4);
 	char *address = memmem(p, info_size, "ADDRESS", 7);
 	char *size = memmem(p, info_size, "SIZE", 4);
 	char *kmodinfo = memmem(p, info_size, "KMODINFO", 8);
-	format_hex(address, sa_for_ptr(info->kext));
-	format_hex(size, info->vm_size);
-	format_hex(kmodinfo, sa_for_ptr(info->kmod_info));
+	format_hex(address, 16, sa_for_ptr(info->kext));
+	format_hex(size, 16, info->vm_size);
+	format_hex(kmodinfo, 16, sa_for_ptr(info->kmod_info));
+	format_hex(nnn0, 4, kext_id);
+	format_hex(nnn1, 4, kext_id);
 	// Adjust the __PRELINK_INFO metadata.
 	prelink_info_section->size += info_size;
+	// Increment the kext ID for the next kext.
+	kext_id++;
 }
 
 // Handles the "kextload" command, which is used to process the bulk uploaded data as an XNU kernel

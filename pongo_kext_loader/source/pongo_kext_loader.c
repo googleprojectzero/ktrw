@@ -369,13 +369,17 @@ unmap_file(void *data, size_t size) {
 
 // ---- Kernelcache symbol tables -----------------------------------------------------------------
 
-// The path to the kernelcache symbol tables directory.
-static const char *kernelcache_symbols_path;
+// The paths to the kernelcache symbol tables directory.
+static const char **kernelcache_symbols_path = NULL;
+static size_t kernelcache_symbols_path_count = 0;
 
 // Set the path to the kextload pongo module.
 static void
 set_kernelcache_symbols_path(const char *path) {
-	kernelcache_symbols_path = path;
+	kernelcache_symbols_path_count++;
+	size_t new_size = kernelcache_symbols_path_count * sizeof(*kernelcache_symbols_path);
+	kernelcache_symbols_path = realloc(kernelcache_symbols_path, new_size);
+	kernelcache_symbols_path[kernelcache_symbols_path_count - 1] = path;
 }
 
 // A kernelcache symbol table.
@@ -627,6 +631,155 @@ parse_kernelcache_symbols_symbol(struct text_parser *tp,
 	return true;
 }
 
+struct kcs_sym {
+	uint32_t off;
+	uint64_t addr;
+};
+
+struct kcs_kc {
+	uint8_t uuid[16];
+	uint32_t symcnt;
+	struct kcs_sym *syms;
+};
+
+struct kcs_state {
+	struct kcs_kc *kcs;
+	uint32_t kccnt;
+	uint32_t maxsymcnt;
+	char *symstr;
+	size_t symsize;
+};
+
+// Update a kcs_state partial kernelcache symbol table state with the kernelcache symbols files in
+// a directory.
+static bool
+kernelcache_symbol_table_update_directory(struct kcs_state *state, const char *dirpath) {
+	// Open the directory for iterating.
+	DIR *dir = opendir(dirpath);
+	if (dir == NULL) {
+		ERROR("Could not iterate directory \"%s\"", dirpath);
+		return false;
+	}
+	// Iterate the directory.
+	for (;;) {
+		// Get the next entry.
+		struct dirent *dp = readdir(dir);
+		if (dp == NULL) {
+			break;
+		}
+		// Only process regular files.
+		if (dp->d_type != DT_REG) {
+			goto next_0;
+		}
+		// Skip hidden entries.
+		if (dp->d_name[0] == '.') {
+			goto next_0;
+		}
+		// Require file extension ".txt".
+		const char *extension = ".txt";
+		if (dp->d_namlen <= strlen(extension)) {
+			goto next_0;
+		}
+		const char *file_ext = dp->d_name + dp->d_namlen - strlen(extension);
+		if (strcmp(file_ext, extension) != 0) {
+			goto next_0;
+		}
+		// Generate the full path.
+		char path[PATH_MAX + 1];
+		snprintf(path, sizeof(path), "%s/%s", dirpath, dp->d_name);
+		// Read the file.
+		size_t file_size;
+		void *file_data = map_file(path, &file_size);
+		if (file_data == NULL) {
+			goto next_0;
+		}
+		// Parse the header for the UUID.
+		struct text_parser tp = { file_data, (void *) ((uintptr_t) file_data + file_size) };
+		uint8_t uuid[16];
+		bool ok = parse_kernelcache_symbols_header(&tp, uuid);
+		if (!ok) {
+			ERROR("Invalid kernelcache symbols file \"%s\"", path);
+			goto next_1;
+		}
+		// Check if this UUID already exists.
+		struct kcs_kc *kc;
+		for (size_t kc_idx = 0; kc_idx < state->kccnt; kc_idx++) {
+			kc = &state->kcs[kc_idx];
+			if (memcmp(kc->uuid, uuid, 16) == 0) {
+				// This UUID already exists.
+				WARNING("Duplicate UUID %02X%02X%02X%02X-%02X%02X-"
+						"%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+						uuid[ 0], uuid[ 1], uuid[ 2], uuid[ 3],
+						uuid[ 4], uuid[ 5], uuid[ 6], uuid[ 7],
+						uuid[ 8], uuid[ 9], uuid[10], uuid[11],
+						uuid[12], uuid[13], uuid[14], uuid[15]);
+				goto kernelcache_uuid_already_exists;
+			}
+		}
+		// Otherwise, allocate a new kc_syms struct in the array.
+		state->kccnt++;
+		state->kcs = realloc(state->kcs, state->kccnt * sizeof(*state->kcs));
+		kc = &state->kcs[state->kccnt - 1];
+		// Initialize the new kc_syms struct.
+		memcpy(kc->uuid, uuid, sizeof(kc->uuid));
+		kc->symcnt = 0;
+		kc->syms = NULL;
+kernelcache_uuid_already_exists:
+		// Now parse the symbols.
+		for (;;) {
+			// Parse one symbol.
+			char *symbol = NULL;
+			size_t length;
+			uint64_t address;
+			ok = parse_kernelcache_symbols_symbol(&tp, &symbol, &length, &address);
+			if (!ok) {
+				ERROR("Invalid kernelcache symbols file \"%s\"", path);
+				break;
+			}
+			// If we didn't get a symbol, then this is the end.
+			if (symbol == NULL) {
+				break;
+			}
+			// TODO: Handle inserting another copy of the same symbol.
+			// Insert this symbol in the kernelcache's array.
+			kc->symcnt++;
+			kc->syms = realloc(kc->syms, kc->symcnt * sizeof(*kc->syms));
+			struct kcs_sym *sym = &kc->syms[kc->symcnt - 1];
+			sym->addr = address;
+			// Check if this symbol already exists in the symbol_strings blob and set
+			// the offset.
+			void *found = memmem(state->symstr, state->symsize, symbol, length + 1);
+			if (found != NULL) {
+				// This symbol already exists. Set the offset directly.
+				size_t offset = ((uintptr_t) found - (uintptr_t) state->symstr);
+				sym->off = (uint32_t) offset;
+			} else {
+				// This symbol is new. Insert it into the blob.
+				size_t new_size = state->symsize + length + 1;
+				state->symstr = realloc(state->symstr, new_size);
+				strcpy(state->symstr + state->symsize, symbol);
+				sym->off = (uint32_t) state->symsize;
+				assert(sym->off == state->symsize);
+				state->symsize = new_size;
+			}
+			// Free the symbol.
+			free(symbol);
+		}
+		// All symbols have been parsed, we're done with this file! Update the maximum
+		// symbol count so we can pre-allocate the serialized blob.
+		if (kc->symcnt > state->maxsymcnt) {
+			state->maxsymcnt = kc->symcnt;
+		}
+next_1:;
+		// Unmap the file.
+		unmap_file(file_data, file_size);
+next_0:;
+	}
+	// Close the directory.
+	closedir(dir);
+	return true;
+}
+
 // Binary format of kernelcache symbol table upload data:
 // {
 //     @ offset 0:
@@ -654,199 +807,58 @@ parse_kernelcache_symbols_symbol(struct text_parser *tp,
 // Generate a symbol table.
 static kernelcache_symbol_table
 kernelcache_symbol_table_generate() {
-	// The strategy is as follows:
-	//   1. Iterate the kernelcache_symbols_path directory.
-	//   2. For each file in the directory, parse it to get the kernelcache UUID and symbols.
-	//   3. Append a kc_syms{ uuid, count, syms } struct for this UUID.
-	//   4. Get the offset of each symbol name in a common symbol_strings blob, appending if
-	//      not present.
-	//   5. Append the sym{ off, addr } struct to this syms and update the count.
-	//   6. Serialize them all together.
-	struct sym {
-		uint32_t off;
-		uint64_t addr;
-	};
-	struct kc_syms {
-		uint8_t uuid[16];
-		uint32_t count;
-		struct sym *syms;
-	};
-	kernelcache_symbol_table symbol_table = { NULL, 0 };
-	struct kc_syms *kcs = NULL;
-	size_t kc_count = 0;
-	char *symbol_strings = NULL;
-	size_t symbol_strings_size = 0;
-	// Open the kernelcache_symbols_path directory for iterating.
-	DIR *dir = opendir(kernelcache_symbols_path);
-	if (dir == NULL) {
-		ERROR("Could not iterate directory \"%s\"", kernelcache_symbols_path);
-		goto fail;
-	}
-	// Iterate the directory.
-	size_t max_sym_count = 0;
-	for (;;) {
-		// Get the next entry.
-		struct dirent *dp = readdir(dir);
-		if (dp == NULL) {
-			break;
-		}
-		// Only process regular files.
-		if (dp->d_type != DT_REG) {
-			goto next_0;
-		}
-		// Skip hidden entries.
-		if (dp->d_name[0] == '.') {
-			goto next_0;
-		}
-		// Require file extension ".txt".
-		const char *extension = ".txt";
-		if (dp->d_namlen <= strlen(extension)) {
-			goto next_0;
-		}
-		const char *file_ext = dp->d_name + dp->d_namlen - strlen(extension);
-		if (strcmp(file_ext, extension) != 0) {
-			goto next_0;
-		}
-		// Generate the full path.
-		char path[PATH_MAX + 1];
-		snprintf(path, sizeof(path), "%s/%s", kernelcache_symbols_path, dp->d_name);
-		// Read the file.
-		size_t file_size;
-		void *file_data = map_file(path, &file_size);
-		if (file_data == NULL) {
-			goto next_0;
-		}
-		// Parse the header for the UUID.
-		struct text_parser tp = { file_data, (void *) ((uintptr_t) file_data + file_size) };
-		uint8_t uuid[16];
-		bool ok = parse_kernelcache_symbols_header(&tp, uuid);
-		if (!ok) {
-			ERROR("Invalid kernelcache symbols file \"%s\"", path);
-			goto next_1;
-		}
-		// Check if this UUID already exists.
-		struct kc_syms *kc;
-		for (size_t kc_idx = 0; kc_idx < kc_count; kc_idx++) {
-			kc = &kcs[kc_idx];
-			if (memcmp(kc->uuid, uuid, 16) == 0) {
-				// This UUID already exists.
-				WARNING("Duplicate UUID %02X%02X%02X%02X-%02X%02X-"
-						"%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
-						uuid[ 0], uuid[ 1], uuid[ 2], uuid[ 3],
-						uuid[ 4], uuid[ 5], uuid[ 6], uuid[ 7],
-						uuid[ 8], uuid[ 9], uuid[10], uuid[11],
-						uuid[12], uuid[13], uuid[14], uuid[15]);
-				goto kernelcache_uuid_already_exists;
-			}
-		}
-		// Otherwise, allocate a new kc_syms struct in the array.
-		kc_count++;
-		kcs = realloc(kcs, kc_count * sizeof(*kcs));
-		kc = &kcs[kc_count - 1];
-		// Initialize the new kc_syms struct.
-		memcpy(kc->uuid, uuid, sizeof(kc->uuid));
-		kc->count = 0;
-		kc->syms = NULL;
-kernelcache_uuid_already_exists:
-		// Now parse the symbols.
-		for (;;) {
-			// Parse one symbol.
-			char *symbol = NULL;
-			size_t length;
-			uint64_t address;
-			ok = parse_kernelcache_symbols_symbol(&tp, &symbol, &length, &address);
-			if (!ok) {
-				ERROR("Invalid kernelcache symbols file \"%s\"", path);
-				break;
-			}
-			// If we didn't get a symbol, then this is the end.
-			if (symbol == NULL) {
-				break;
-			}
-			// TODO: Handle inserting another copy of the same symbol.
-			// Insert this symbol in the kernelcache's array.
-			kc->count++;
-			kc->syms = realloc(kc->syms, kc->count * sizeof(*kc->syms));
-			struct sym *sym = &kc->syms[kc->count - 1];
-			sym->addr = address;
-			// Check if this symbol already exists in the symbol_strings blob and set
-			// the offset.
-			void *found = memmem(symbol_strings, symbol_strings_size,
-					symbol, length + 1);
-			if (found != NULL) {
-				// This symbol already exists. Set the offset directly.
-				size_t offset = ((uintptr_t) found - (uintptr_t) symbol_strings);
-				sym->off = (uint32_t) offset;
-			} else {
-				// This symbol is new. Insert it into the blob.
-				size_t new_size = symbol_strings_size + length + 1;
-				symbol_strings = realloc(symbol_strings, new_size);
-				strcpy(symbol_strings + symbol_strings_size, symbol);
-				sym->off = (uint32_t) symbol_strings_size;
-				assert(sym->off == symbol_strings_size);
-				symbol_strings_size = new_size;
-			}
-			// Free the symbol.
-			free(symbol);
-		}
-		// All symbols have been parsed, we're done with this file! Update the maximum
-		// symbol count so we can pre-allocate the serialized blob.
-		if (kc->count > max_sym_count) {
-			max_sym_count = kc->count;
-		}
-next_1:;
-		// Unmap the file.
-		unmap_file(file_data, file_size);
-next_0:;
+	// For each directory, collect an intermediate representation of all the symbols.
+	struct kcs_state state = {};
+	for (size_t i = 0; i < kernelcache_symbols_path_count; i++) {
+		kernelcache_symbol_table_update_directory(&state, kernelcache_symbols_path[i]);
 	}
 	// At this point we've parsed all the structures. Time to build the serialized kernelcache
 	// symbol table blob.
+	kernelcache_symbol_table symbol_table = { NULL, 0 };
 	size_t size = sizeof(uint32_t) + sizeof(uint32_t);
-	size_t kc_desc_size = sizeof(kcs[0].uuid) + sizeof(uint32_t);
-	size += kc_count * kc_desc_size;
+	size_t kc_desc_size = sizeof(state.kcs[0].uuid) + sizeof(uint32_t);
+	size += state.kccnt * kc_desc_size;
 	size_t offset = size;
 	size_t sym_size = sizeof(uint32_t) + sizeof(uint64_t);
-	size_t kc_syms_size = sizeof(uint32_t) + max_sym_count * sym_size;
-	size += kc_count * kc_syms_size;
-	size += symbol_strings_size;
+	size_t kc_syms_size = sizeof(uint32_t) + state.maxsymcnt * sym_size;
+	size += state.kccnt * kc_syms_size;
+	size += state.symsize;
 	uint8_t *blob = malloc(size);
-	*(uint32_t *) (blob) = kc_count;
+	*(uint32_t *) (blob) = state.kccnt;	// kernelcache_count
 	size_t kc_desc = sizeof(uint32_t) + sizeof(uint32_t);
-	for (size_t kc_idx = 0; kc_idx < kc_count; kc_idx++) {
+	for (size_t kc_idx = 0; kc_idx < state.kccnt; kc_idx++) {
 		// Build the descriptor for this kernelcache UUID.
 		assert((uint32_t) offset == offset);
-		struct kc_syms *kc = &kcs[kc_idx];
-		memcpy(blob + kc_desc, kc->uuid, sizeof(kc->uuid));
+		struct kcs_kc *kc = &state.kcs[kc_idx];
+		memcpy(blob + kc_desc, kc->uuid, sizeof(kc->uuid));	// kernelcache_uuid
 		kc_desc += sizeof(kc->uuid);
-		*(uint32_t *) (blob + kc_desc) = (uint32_t) offset;
+		*(uint32_t *) (blob + kc_desc) = (uint32_t) offset;	// kernelcache_symbols_offset
 		kc_desc += sizeof(uint32_t);
-		// Build the kernelcache blob.
-		assert((uint32_t) kc->count == kc->count);
-		*(uint32_t *) (blob + offset) = kc->count;
+		// Build the kernelcache symbols table.
+		assert((uint32_t) kc->symcnt == kc->symcnt);
+		*(uint32_t *) (blob + offset) = kc->symcnt;	// symbol_count
 		offset += sizeof(uint32_t);
-		for (size_t i = 0; i < kc->count; i++) {
-			*(uint32_t *)(blob + offset) = kc->syms[i].off;
+		for (size_t i = 0; i < kc->symcnt; i++) {
+			*(uint32_t *)(blob + offset) = kc->syms[i].off;	// symbol_offset
 			offset += sizeof(uint32_t);
-			*(uint64_t *)(blob + offset) = kc->syms[i].addr;
+			*(uint64_t *)(blob + offset) = kc->syms[i].addr;	// address
 			offset += sizeof(uint64_t);
 		}
 		assert(offset <= size);
 	}
 	// Append the symbol strings.
-	assert(offset + symbol_strings_size <= size);
-	*(uint32_t *)(blob + sizeof(uint32_t)) = offset;
-	size = offset + symbol_strings_size;
-	memcpy(blob + offset, symbol_strings, symbol_strings_size);
+	assert(offset + state.symsize <= size);
+	*(uint32_t *)(blob + sizeof(uint32_t)) = offset;	// symbol_strings_offset
+	size = offset + state.symsize;
+	memcpy(blob + offset, state.symstr, state.symsize);
 	symbol_table.data = blob;
 	symbol_table.size = size;
-fail:
-	// Close the directory.
-	closedir(dir);
-	// Free the intermediate allocations.
-	for (size_t kc_idx = 0; kc_idx < kc_count; kc_idx++) {
-		free(kcs[kc_idx].syms);
+	// Free the state allocations.
+	for (size_t kc_idx = 0; kc_idx < state.kccnt; kc_idx++) {
+		free(state.kcs[kc_idx].syms);
 	}
-	free(kcs);
+	free(state.kcs);
+	free(state.symstr);
 	return symbol_table;
 }
 
@@ -862,7 +874,8 @@ kernelcache_symbol_table_destroy(kernelcache_symbol_table symbol_table) {
 static const char *pongo_kextload_path;
 
 // The path to the iOS kernel extension we want to load.
-static const char *kext_path;
+static const char **kext_path = NULL;
+size_t kext_path_count = 0;
 
 // Set the path to the kextload pongo module.
 static void
@@ -873,7 +886,9 @@ set_pongo_kextload_path(const char *path) {
 // Set the path to the iOS kernel extension we want to load.
 static void
 set_kext_path(const char *path) {
-	kext_path = path;
+	kext_path_count++;
+	kext_path = realloc(kext_path, kext_path_count * sizeof(*kext_path));
+	kext_path[kext_path_count - 1] = path;
 }
 
 // Load the kextload pongo module.
@@ -924,10 +939,10 @@ pongo_kext_load_symbols(pongo_usb_device pongo) {
 
 // Load an XNU kernel extension.
 static bool
-pongo_kext_load(pongo_usb_device pongo) {
+pongo_kext_load(pongo_usb_device pongo, const char *path) {
 	// Read the kernel extension.
 	size_t kext_size;
-	void *kext = map_file(kext_path, &kext_size);
+	void *kext = map_file(path, &kext_size);
 	if (kext == NULL) {
 		return false;
 	}
@@ -940,9 +955,14 @@ pongo_kext_load(pongo_usb_device pongo) {
 	// Sleep awhile to let the command process before executing the next command.
 	// TODO: Do this asynchronously.
 	usleep(200 * 1000);
-	// Boot the kernel with the kernel extension.
-	pongo_usb_send_command(pongo, "bootx\n", 0);
 	return true;
+}
+
+// Boot XNU.
+static void
+pongo_kext_boot_xnu(pongo_usb_device pongo) {
+	// Boot the kernel with the kernel extension(s).
+	pongo_usb_send_command(pongo, "bootx\n", 0);
 }
 
 // State for a currently tracked pongoOS device.
@@ -988,14 +1008,17 @@ pongo_instance_load_kext(struct pongo_instance *instance) {
 	if (!ok) {
 		goto fail;
 	}
-	printf("[%x] Loading kernel extension\n", instance->device->service);
-	ok = pongo_kext_load(instance->device);
-	if (!ok) {
-		goto fail;
+	printf("[%x] Loading kernel extensions\n", instance->device->service);
+	for (size_t i = 0; i < kext_path_count; i++) {
+		ok = pongo_kext_load(instance->device, kext_path[i]);
+		if (!ok) {
+			goto fail;
+		}
 	}
+	pongo_kext_boot_xnu(instance->device);
 	return true;
 fail:
-	ERROR("Could not load kernel extension on pongoOS devicec %x", instance->device->service);
+	ERROR("Could not load kernel extension on pongoOS device %x", instance->device->service);
 	return false;
 }
 
@@ -1189,13 +1212,13 @@ fail_0:
 // Print usage information.
 _Noreturn static void
 usage() {
-	printf("%s <kextload-module> <kernel-symbols> <xnu-kext>\n"
+	printf("%s -l <kextload-module> (-s <kernel-symbols>)... (-k <xnu-kext>)...\n"
 		"\n"
 		"Loads and boots an XNU kernel extension on all attached pongoOS devices.\n"
 		"\n"
 		"    <kextload-module>   The pongoOS kext loading module\n"
-		"    <kernel-symbols>    The directory containing kernel symbols\n"
-		"    <xnu-kext>          The XNU kernel extension to load into the kernelcache\n"
+		"    <kernel-symbols>    A directory containing kernel symbols\n"
+		"    <xnu-kext>          An XNU kernel extension to load into the kernelcache\n"
 		"\n",
 		getprogname());
 	exit(1);
@@ -1212,19 +1235,71 @@ path_accessible(const char *path, int type, const char *description) {
 	}
 }
 
+static void
+handle_pongo_kextload_path(const char *path) {
+	if (pongo_kextload_path != NULL) {
+		ERROR("Only one pongoOS kext loading module is allowed");
+		exit(1);
+	}
+	path_accessible(path, R_OK, "pongoOS kextload module");
+	set_pongo_kextload_path(path);
+}
+
+static void
+handle_symbols_path(const char *path) {
+	path_accessible(path, X_OK, "kernel symbols directory");
+	set_kernelcache_symbols_path(path);
+}
+
+static void
+handle_kext_path(const char *path) {
+	path_accessible(path, R_OK, "XNU kernel extension");
+	set_kext_path(path);
+}
+
 // Main function.
 int
 main(int argc, const char *argv[]) {
-	// Parse the arguments.
-	if (argc != 4) {
+	if (argc <= 1) {
 		usage();
 	}
-	path_accessible(argv[1], R_OK, "pongoOS kextload module");
-	path_accessible(argv[2], X_OK, "kernel symbols directory");
-	path_accessible(argv[3], R_OK, "XNU kernel extension");
-	set_pongo_kextload_path(argv[1]);
-	set_kernelcache_symbols_path(argv[2]);
-	set_kext_path(argv[3]);
+	// Parse the arguments.
+	int argi = 1;
+#define next_arg()	({ if (argi >= argc) { \
+			       usage(); \
+			   } \
+			   argv[argi++]; })
+	while (argi < argc) {
+		const char *arg = next_arg();
+		if (strcmp(arg, "-l") == 0) {
+			const char *path = next_arg();
+			handle_pongo_kextload_path(path);
+		} else if (strcmp(arg, "-s") == 0) {
+			const char *path = next_arg();
+			handle_symbols_path(path);
+		} else if (strcmp(arg, "-k") == 0) {
+			const char *path = next_arg();
+			handle_kext_path(path);
+		} else {
+			usage();
+		}
+	}
+	bool error = false;
+	if (pongo_kextload_path == NULL) {
+		ERROR("No pongoOS kext loading module specified");
+		error = true;
+	}
+	if (kernelcache_symbols_path_count == 0) {
+		ERROR("No kernelcache symbols directory specified");
+		error = true;
+	}
+	if (kext_path_count == 0) {
+		ERROR("No XNU kernel extensions specified");
+		error = true;
+	}
+	if (error) {
+		exit(1);
+	}
 	pongo_usb_kext_loader();
 	return 0;
 }

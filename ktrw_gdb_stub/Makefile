@@ -33,7 +33,7 @@ SOURCES = source/gdb_stub/gdb_cpu.c \
 	  source/debug.c \
 	  source/devicetree.c \
 	  source/jit_heap.c \
-	  source/main.c \
+	  source/ktrw.c \
 	  source/page_table.c \
 	  source/primitives.c \
 	  source/watchdog.c
