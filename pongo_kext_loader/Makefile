@@ -2,7 +2,7 @@ TARGET = pongo_kext_loader
 
 DEBUG ?= 0
 
-CFLAGS = -O2 -Wall -Werror
+CFLAGS = -O2 -Wall -Werror -Wno-error=deprecated-declarations
 
 ifneq ($(DEBUG),0)
 CFLAGS += -DDEBUG=$(DEBUG)
