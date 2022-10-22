@@ -1020,7 +1020,7 @@ kextload_patch() {
 		0x00000000,	// [3]  ?
 		0xFFFFFFE0,	// [4]  MSR
 	};
-	xnu_pf_maskmatch(patchset, ktrr_mmu_match, ktrr_mmu_mask, ktrr_mmu_count,
+	xnu_pf_maskmatch(patchset, "patch_ktrr_mmu", ktrr_mmu_match, ktrr_mmu_mask, ktrr_mmu_count,
 			true, ktrr_mmu_patch);
 
 	// Patch out KTRR AMCC lockdown.
@@ -1039,7 +1039,7 @@ kextload_patch() {
 		0xFFFFFFE0,	// [3]  MSR
 		0xFFFFFFE0,	// [4]  MSR
 	};
-	xnu_pf_maskmatch(patchset, ktrr_amcc_match, ktrr_amcc_mask, ktrr_amcc_count,
+	xnu_pf_maskmatch(patchset, "patch_ktrr_amcc", ktrr_amcc_match, ktrr_amcc_mask, ktrr_amcc_count,
 			true, ktrr_amcc_patch);
 
 	// Patch the prologue of OSKext::initWithPrelinkedInfoDict() to set doCoalesedSlides to
@@ -1063,7 +1063,7 @@ kextload_patch() {
 		0xFFE0FFFF,	// [4]  MOV
 		0xFFFFFC1F,	// [5]  BLR
 	};
-	xnu_pf_maskmatch(patchset, OSKext_init_match, OSKext_init_mask, OSKext_init_count,
+	xnu_pf_maskmatch(patchset, "patch_OSKext_init", OSKext_init_match, OSKext_init_mask, OSKext_init_count,
 			true, OSKext_init_patch);
 
 	// Run the patchset to patch the kernel.
